@@ -1,0 +1,11 @@
+{
+  "_note": "SYNTHETIC sample — RFC5737/RFC3849 documentation IP ranges, not real addresses.",
+  "endpoints": [
+    {"name":"web-frontend-prod","ip":"203.0.113.10","port":22,"protocol":"TCP"},
+    {"name":"web-frontend-prod","ip":"203.0.113.10","port":443,"protocol":"HTTPS"},
+    {"name":"win-rdp-jumpbox","ip":"203.0.113.20","port":3389,"protocol":"TCP"},
+    {"name":"api-gateway-vm","ip":"198.51.100.5","port":80,"protocol":"HTTP"},
+    {"name":"api-gateway-vm","ip":"198.51.100.5","port":443,"protocol":"HTTPS"},
+    {"name":"legacy-ssh-host","ip":"192.0.2.44","port":22,"protocol":"TCP"}
+  ]
+}
