@@ -1,15 +1,14 @@
 ---
 name: "Cloud External Attack-Path Suite"
-author: "rbragg_tenb"
-github_url: "https://github.com/rbragg_tenb/Cloud-Ext-Attack-Path-Report"
-description: "High-fidelity external attack-path agent for Tenable Cloud Security: running, internet-direct workloads with an observed listening service, a remotely exploitable vulnerability, and public evidence (EPSS or CISA KEV), tiered by identity blast radius."
+author: "Echo6Bravo"
+github_url: "https://github.com/Echo6Bravo/cloud-ext-attack-path-suite"
+description: "High-fidelity external attack-path agent for Tenable Cloud Security: running, internet-exposed workloads with a reachable service, an exploitable publicly-evidenced vulnerability (EPSS or CISA KEV), tiered by identity blast radius."
 license: "MIT"
-type: "agent"
-tier: "unreviewed"
+tier: "contributed"
 tags: [cloud-security, tenable, attack-path, cnapp, exposure, epss, cisa-kev, cspm]
-framework: "Claude Code SKILL"
-integrations: [Tenable Cloud Security, AWS, Azure, GCP]
+integrations: [Tenable, AWS, Azure, GCP]
 date_added: 2026-08-02
+contribution_agreement_date: 2026-08-02T20:51:53Z
 ---
 
 The Cloud External Attack-Path Suite is an autonomous agent for Tenable Cloud Security
