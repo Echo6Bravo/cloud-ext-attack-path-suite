@@ -154,7 +154,7 @@ h1{margin:0 0 10px;font-size:24px;font-weight:800;max-width:1050px;color:var(--a
 .tierband.t1 .cnt{background:var(--crit);color:#1a0000}
 .tierband.t2 .cnt{background:var(--accent);color:#141a1c}
 .tierband .ts{font-size:12.5px;color:var(--ink2);margin-top:6px;max-width:900px}
-.tierdivider{border:0;border-top:4px solid var(--mut);opacity:.5;margin:44px 0 0}
+.tierdivider{border:0;border-top:6px solid var(--mut);opacity:.55;margin:48px 0 0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:12px 0}
 .card.t1{border-color:#4a3a12}
 .chead{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px}
@@ -181,6 +181,54 @@ table.vt td{border-bottom:1px solid #262f31;padding:6px 7px;vertical-align:top;t
 .ev-both{background:rgba(176,0,0,.35);color:#ffb3b3;border:1px solid rgba(255,91,91,.6)}
 .ipport{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#cdd7dd}
 footer{color:var(--mut);font-size:11px;padding:20px 40px;border-top:1px solid var(--line)}
+
+/* ===========================================================================
+   PRINT / PDF stylesheet.  Screen uses the dark Tenable theme; print flips to a
+   high-contrast light palette (ink-friendly, professional) and controls paging.
+   Produce a PDF via the browser: File > Print > Save as PDF (Letter/A4, default
+   margins, "Background graphics" ON so severity colors render).
+   =========================================================================== */
+@media print {
+  @page { size: Letter; margin: 14mm 12mm; }
+  :root{
+    --bg:#ffffff;--page:#ffffff;--card:#ffffff;--line:#c9ced6;--ink:#111418;
+    --ink2:#2b3138;--mut:#5b636e;--accent:#111418;
+    --crit:#b3261e;--high:#a15c00;--med:#8a6d00;--good:#1a7f37;
+  }
+  html,body{background:#fff !important;color:#111418 !important;font-size:11px}
+  .bar{background:#111418 !important;height:3px}
+  header{background:#fff !important;border-bottom:2px solid #111418;padding:0 0 12px}
+  .eyebrow{color:#5b636e !important}
+  h1{color:#111418 !important}
+  .accts,.exec,.note,.kpi,.exec-rec{background:#fff !important;
+    border:1px solid #c9ced6 !important;box-shadow:none !important}
+  .exec{border-top:2px solid #111418 !important}
+  .exec-h,.acctprov,.rank,.cve a{color:#0b5cad !important}   /* readable link/accent ink */
+  .kpi .n{color:#111418 !important}.kpi.red .n{color:#b3261e !important}
+  .kpi::before,.kpi.red::before{background:#111418 !important}
+  .wrap{padding:10px 0}
+  /* keep a finding on one page; never split a card, diagram, or table row */
+  .card{border:1px solid #c9ced6 !important;background:#fff !important;
+    break-inside:avoid;page-break-inside:avoid;margin:10px 0}
+  .card.t1{border-color:#b3261e !important}
+  .diagram,table.vt tr{break-inside:avoid;page-break-inside:avoid}
+  svg text{fill:#111418 !important}          /* diagram labels to dark ink */
+  .diagram rect[fill="#12181a"]{fill:#ffffff !important}
+  /* tier bands & divider: strong on white, and start each tier on a fresh page */
+  .tierband{background:#f2f3f5 !important;border:1px solid #c9ced6 !important}
+  .tierband.t1{border-left:6px solid #b3261e !important;break-before:auto}
+  .tierband.t2{border-left:6px solid #5b636e !important;break-before:page}
+  .tierband .tt,.tierband .ts{color:#111418 !important}
+  .tierband.t1 .cnt{background:#b3261e !important;color:#fff !important}
+  .tierband.t2 .cnt{background:#5b636e !important;color:#fff !important}
+  .tierdivider{border-top:3px solid #5b636e !important;opacity:1;margin:22px 0 0}
+  /* pills/badges: force ink + border so they read even if bg graphics are off */
+  .pill,.ev,.badge{color:#111418 !important;border:1px solid #8a8f98 !important}
+  .b-kev,.ev-kev,.ev-both{color:#b3261e !important;border-color:#b3261e !important}
+  a[href]{color:#0b5cad !important;text-decoration:none}
+  footer{color:#5b636e !important;border-top:1px solid #c9ced6 !important;padding:12px 0}
+  .meta code,.ipport{color:#2b3138 !important}
+}
 """
 def cvss_pill(c):
     col="#ff5b5b" if c>=9 else "#ff9f45" if c>=7 else "#ffd200"; return f'<span class="pill" style="background:{col}22;color:{col}">{c}</span>'
@@ -359,6 +407,7 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 </ul>
 <b>Notes.</b> The published year shown per CVE is informational only and never affects inclusion; findings without a CVE identifier (e.g. distribution advisories) display a year of &ldquo;&mdash;&rdquo;. The stopped-instance exclusion is enforced at the query root and re-verified in post-processing so it cannot be inadvertently dropped. Because the threat-evidence gate relies on CVE-keyed public sources (EPSS and CISA KEV), findings without a CVE mapping are out of scope by design.</div>
 
+<hr class="tierdivider">
 <div class="tierband t1"><div class="tt">TIER 1 &mdash; Privileged Attack Paths <span class="cnt">{n1p} hosts</span></div>
 <div class="ts">Internet-facing exploitable service on a workload whose identity holds severe/administrative permissions [SeverePermissionActionPrincipalAttribute]. A compromise here can escalate to broad cloud control &mdash; highest priority.</div></div>
 {cards1}
