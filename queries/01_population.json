@@ -1,0 +1,207 @@
+{
+ "typeName": "UdmQuery",
+ "objectTypeName": "IVirtualMachine",
+ "groupLevel": 0,
+ "collapsed": false,
+ "objectResultHidden": false,
+ "timeZoneId": null,
+ "id": "a70e4372-58fe-afd9-194c-034a0353ae27",
+ "joins": [],
+ "properties": [
+  {
+   "identifier": "EntityName",
+   "queryId": "a70e4372-58fe-afd9-194c-034a0353ae27",
+   "groupLevel": 0,
+   "aggregation": null,
+   "sort": null,
+   "startOfWeek": null,
+   "transform": null
+  }
+ ],
+ "ruleGroup": {
+  "typeName": "UdmQueryRuleGroup",
+  "id": "d21c7eed-249d-aaa3-f567-f24e3e0fb6ed",
+  "collapsed": false,
+  "name": "",
+  "not": false,
+  "ignored": false,
+  "operator": "And",
+  "rules": [
+   {
+    "typeName": "UdmQueryRule",
+    "id": "8a18441d-3597-b051-295b-17064e522793",
+    "ignored": false,
+    "not": true,
+    "operator": "In",
+    "propertyIdentifier": "VirtualMachineStatus",
+    "values": [
+     "Stopped"
+    ]
+   },
+   {
+    "typeName": "UdmQueryRule",
+    "id": "f845f851-c109-a268-8abb-b57fbbda5598",
+    "ignored": false,
+    "not": false,
+    "operator": "In",
+    "propertyIdentifier": "EntityNetworkAccessType",
+    "values": [
+     "ExternalDirect"
+    ]
+   },
+   {
+    "typeName": "UdmQueryRule",
+    "id": "fbd65abb-dd6c-9caa-fccb-611016a8f78e",
+    "ignored": false,
+    "not": false,
+    "operator": "In",
+    "propertyIdentifier": "EntityNetworkAccessScope",
+    "values": [
+     "Wide",
+     "All"
+    ]
+   },
+   {
+    "typeName": "UdmQueryRelationRule",
+    "id": "be0ffd5b-1cc0-cfee-04ca-6755428f228b",
+    "ignored": false,
+    "not": false,
+    "relationPropertyIdentifier": "NetworkDynamicAnalysisResourceNetworkEndpoints",
+    "ruleGroup": {
+     "typeName": "UdmQueryRuleGroup",
+     "id": "12fd6a9b-a3d6-567d-f8aa-8acc4d74a02a",
+     "collapsed": false,
+     "name": "",
+     "not": false,
+     "ignored": false,
+     "operator": "And",
+     "rules": []
+    }
+   },
+   {
+    "typeName": "UdmQueryRelationRule",
+    "id": "93d26f42-1bc5-c0cf-c601-ff1d57b73743",
+    "ignored": false,
+    "not": false,
+    "relationPropertyIdentifier": "EntityPackageVulnerabilityInstances",
+    "ruleGroup": {
+     "typeName": "UdmQueryRuleGroup",
+     "id": "01a3246b-8069-9274-2306-3a3d80bba66e",
+     "collapsed": false,
+     "name": "",
+     "not": false,
+     "ignored": false,
+     "operator": "And",
+     "rules": [
+      {
+       "typeName": "UdmQueryRuleGroup",
+       "id": "f48b49d6-ccc9-113e-e957-13b5adbfbb44",
+       "collapsed": false,
+       "name": "",
+       "not": false,
+       "ignored": false,
+       "operator": "And",
+       "rules": [
+        {
+         "typeName": "UdmQueryRule",
+         "id": "7554286d-8549-1dce-192d-d2f30818b1a4",
+         "ignored": false,
+         "not": false,
+         "operator": "In",
+         "propertyIdentifier": "PackageVulnerabilityInstanceStatus",
+         "values": [
+          "Open"
+         ]
+        }
+       ]
+      },
+      {
+       "typeName": "UdmQueryRelationRule",
+       "id": "254cd779-3510-deec-95f3-bc4d757abb0b",
+       "ignored": false,
+       "not": false,
+       "relationPropertyIdentifier": "PackageVulnerabilityInstanceVulnerability",
+       "ruleGroup": {
+        "typeName": "UdmQueryRuleGroup",
+        "id": "34142271-28ed-129b-1d27-dfa2c8f64691",
+        "collapsed": false,
+        "name": "",
+        "not": false,
+        "ignored": false,
+        "operator": "And",
+        "rules": [
+         {
+          "typeName": "UdmQueryRuleGroup",
+          "id": "f2008625-5584-5cca-df84-f318cecd7e42",
+          "collapsed": false,
+          "name": "",
+          "not": false,
+          "ignored": false,
+          "operator": "And",
+          "rules": [
+           {
+            "typeName": "UdmQueryRule",
+            "id": "da2b5c87-d541-a3ba-24fe-3e2cce36a908",
+            "ignored": false,
+            "not": false,
+            "operator": "In",
+            "propertyIdentifier": "VulnerabilityAttackVector",
+            "values": [
+             "Network"
+            ]
+           },
+           {
+            "typeName": "UdmQueryRule",
+            "id": "a8dcdddd-e363-19de-1415-c89a9261bed3",
+            "ignored": false,
+            "not": false,
+            "operator": "In",
+            "propertyIdentifier": "VulnerabilityAttackComplexity",
+            "values": [
+             "Low"
+            ]
+           }
+          ]
+         },
+         {
+          "typeName": "UdmQueryRuleGroup",
+          "id": "62b5df76-dd52-1ca0-dceb-cb64647cb919",
+          "collapsed": false,
+          "name": "",
+          "not": false,
+          "ignored": false,
+          "operator": "Or",
+          "rules": [
+           {
+            "typeName": "UdmQueryRule",
+            "id": "f792bbe4-2dc2-d354-d42d-5a3de184ad8a",
+            "ignored": false,
+            "not": false,
+            "operator": "Gte",
+            "propertyIdentifier": "VulnerabilityEpssScore",
+            "values": [
+             0.3
+            ]
+           },
+           {
+            "typeName": "UdmQueryRule",
+            "id": "101d74d0-ffa5-ef4a-62d9-e2b0885cfc09",
+            "ignored": false,
+            "not": false,
+            "operator": "Equals",
+            "propertyIdentifier": "VulnerabilityVprV2MetricsOnCisaKev",
+            "values": [
+             true
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ }
+}
