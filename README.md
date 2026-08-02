@@ -1,18 +1,29 @@
-# Cloud External Attack-Path Report
+# Cloud External Attack-Path Suite
 
-A repeatable **Tenable Cloud Security** report generator that surfaces *genuine externally
-exposed attack paths* in a cloud environment using Tenable Cloud Security (UDM /
-Explore). It finds running, internet-facing virtual machines whose **observed listening
-service** carries a **remotely exploitable** vulnerability backed by **independent public
-evidence of real-world risk**, and tiers them by the privilege of the workload's cloud
-identity — so the output is a short, high-fidelity list of paths worth acting on, not a
-raw vulnerability dump.
+A repeatable **Tenable Cloud Security** agent that surfaces *genuine externally exposed
+attack paths* in a cloud environment using Tenable Cloud Security (UDM / Explore). It
+finds running, internet-facing virtual machines whose **observed listening service**
+carries a **remotely exploitable** vulnerability backed by **independent public evidence
+of real-world risk**, and tiers them by the privilege of the workload's cloud identity —
+so the output is a short, high-fidelity list of paths worth acting on, not a raw
+vulnerability dump.
 
 > **Why this exists.** A reachable IP:port and a scary CVSS score are not, by themselves,
 > an attack path. This tool enforces the full chain — *exposed → a service is really
 > listening → the vulnerable component is that service → it is remotely exploitable →
 > there is public evidence it matters → the host identity has blast radius* — and is
 > deliberately conservative about what counts, so findings are defensible to an owner.
+
+It ships as a **Claude Code plugin marketplace with two agent editions** that share one
+self-testing detection spec and one report renderer, so their findings are identical by
+construction:
+
+- **`ext-attack-path-agent` (MCP edition)** — runs through the Tenable Cloud Security
+  (`tcs`) MCP connector's Explore/UDM tools. Richest results.
+- **`ext-attack-path-agent-api` (API-token edition)** — runs through the public GraphQL
+  API with a Bearer token and **no MCP connector**. Built for headless daily runs.
+
+Either edition can run as a scheduled **daily agent** and report the day-over-day delta.
 
 ---
 
@@ -22,6 +33,7 @@ raw vulnerability dump.
 - [What is deliberately excluded](#what-is-deliberately-excluded)
 - [Tiering](#tiering)
 - [Architecture](#architecture)
+- [Editions & running as a daily agent](#editions--running-as-a-daily-agent)
 - [Requirements](#requirements)
 - [Quick start (synthetic sample)](#quick-start-synthetic-sample)
 - [Running a real assessment](#running-a-real-assessment)
@@ -106,6 +118,8 @@ Privilege is **not** a qualifying gate — it ranks findings so nothing real is 
 ## Architecture
 
 ```
+.claude-plugin/
+  marketplace.json    Marketplace manifest listing both plugin editions.
 attack_path_spec.py   Single source of truth.
                       • GATES: the ordered gate list (the spec).
                       • build_population_query / build_inventory_query /
@@ -117,20 +131,75 @@ attack_path_spec.py   Single source of truth.
 render_report.py      Parameterized renderer (--data, --out, --date). Reads the three
                       datasets, applies post_filter, tiers, and writes the HTML report.
                       Contains no detection thresholds — it defers to the spec.
+build.sh              Verifies the spec, SYNCS the shared lib (spec, renderer, queries,
+                      sample) into each plugin, and zips each into dist/*.plugin.
 queries/              The four spec-generated UDM queries, saved as reference:
                         01_population.json  validate/count the population
                         02_inventory.json   Dataset A — hosts + tier + identity
                         03_endpoints.json   Dataset B — validated IP:port endpoints
                         04_cve.json         Dataset C — per-host qualifying CVEs
+plugins/
+  ext-attack-path-agent/         MCP edition (tcs connector).
+    .claude-plugin/plugin.json
+    skills/ext-attack-path/
+      SKILL.md                   Agent workflow (pull → assemble → render → daily).
+      references/udm-queries.md  The four spec-generated queries, embedded.
+      scripts/                   Synced copies of the spec + renderer + sample.
+  ext-attack-path-agent-api/     API-token edition (GraphQL Bearer token).
+    .claude-plugin/plugin.json
+    scripts/tcs_graphql.sh       Bearer-token GraphQL caller (query on stdin).
+    run_daily.sh                 Headless scheduling wrapper.
+    skills/ext-attack-path-api/
+      SKILL.md                   Same contract via GraphQL (introspect → map → pull).
+      references/graphql-queries.md  UDM→GraphQL mapping template + skeletons.
+cloud-ext-attack-path-suite.md   Tenable Exchange listing (agent front matter + copy).
 data/                 Per-assessment inputs (gitignored except data/sample/).
 data/sample/          Fully synthetic demo dataset (safe to commit).
 output/               Generated HTML reports (gitignored).
+dist/                 Built .plugin bundles (gitignored; regenerated by build.sh).
 LICENSE               MIT.
 ```
+
+**Single source of truth, synced not forked.** `attack_path_spec.py`, `render_report.py`,
+the reference `queries/`, and the synthetic `data/sample/` live once at the repo root.
+`build.sh` copies them into each plugin's bundled `scripts/`/`references/` at build time so
+the two editions can never drift from the root spec.
 
 **Data flow:** `queries/*` are executed against your tenant → raw results assembled into
 `data/assembled.json` (`{"A":…,"B":…,"C":…}`) → `render_report.py` applies the spec's
 post-filter and renders `output/…html`.
+
+## Editions & running as a daily agent
+
+Both editions are Claude Code skills invoked by name. They produce the identical report;
+pick by how you connect to Tenable Cloud Security.
+
+| | MCP edition (`ext-attack-path`) | API-token edition (`ext-attack-path-api`) |
+|---|---|---|
+| **Connects via** | `tcs` MCP connector (Explore/UDM) | Public GraphQL API + Bearer token |
+| **Best for** | Interactive / richest results | Headless, unattended daily cron |
+| **Data pull** | `udm_execute_query` (paginated) | GraphQL cursor pagination (introspect first) |
+| **Extra setup** | MCP connector configured | `TENABLE_CS_API_URL`, `TENABLE_CS_API_TOKEN` |
+
+**Install locally (either edition):**
+
+```bash
+./build.sh                                   # verify spec, sync, and package to dist/
+# add this repo as a marketplace, then enable a plugin:
+#   /plugin marketplace add /path/to/Cloud-Ext-Attack-Path-Report
+#   /plugin install ext-attack-path-agent          (MCP edition)
+#   /plugin install ext-attack-path-agent-api       (API-token edition)
+```
+
+**Run daily.** The API-token edition ships `plugins/ext-attack-path-agent-api/run_daily.sh`
+and a crontab example (see that edition's `SKILL.md`); the MCP edition can be driven by the
+Claude Code scheduler. Each run writes a dated report and summarizes the delta from the
+prior day.
+
+**Submit to the Tenable Exchange.** `cloud-ext-attack-path-suite.md` is the listing file
+(agent front matter + description). Your code stays in this repo — submit the listing that
+points to it via the Exchange's `/cyberagents-exchange-submit` flow or a PR to
+[`tenable/cyberagents-exchange`](https://github.com/tenable/cyberagents-exchange).
 
 ## Requirements
 

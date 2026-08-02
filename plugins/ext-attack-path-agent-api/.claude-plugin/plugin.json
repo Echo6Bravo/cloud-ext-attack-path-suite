@@ -1,0 +1,20 @@
+{
+  "name": "ext-attack-path-agent-api",
+  "version": "1.0.0",
+  "description": "High-fidelity external attack-path sweep for Tenable Cloud Security via the public GraphQL API with a Bearer API token (no MCP connection). Same detection contract as the MCP edition: running, internet-direct workloads with an observed listening service, a remotely exploitable (AV:N, AC:Low) vulnerability with public evidence (EPSS >= 0.30 OR CISA KEV), component-to-port correlation, and identity-blast-radius tiering. Writes a two-tier HTML report; suitable for headless daily runs.",
+  "author": {
+    "name": "Ryan Bragg",
+    "email": "rbragg@tenable.com"
+  },
+  "keywords": [
+    "cloud-security",
+    "tenable",
+    "attack-path",
+    "graphql",
+    "api-token",
+    "headless",
+    "cnapp",
+    "epss"
+  ],
+  "license": "MIT"
+}

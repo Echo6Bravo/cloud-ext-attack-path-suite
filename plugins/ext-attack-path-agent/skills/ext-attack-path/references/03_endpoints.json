@@ -1,0 +1,244 @@
+{
+ "typeName": "UdmQuery",
+ "objectTypeName": "NetworkEndpoint",
+ "groupLevel": 0,
+ "collapsed": false,
+ "objectResultHidden": false,
+ "timeZoneId": null,
+ "id": "b8021c6f-5592-3420-a6bc-c65ba31e46b5",
+ "joins": [
+  {
+   "typeName": "UdmQueryJoin",
+   "id": "0181a1c1-f6e2-06fa-bcfb-4b156cc454a3",
+   "collapsed": false,
+   "objectResultHidden": false,
+   "propertyIdentifier": "NetworkEndpointNetworkDynamicAnalysisResource",
+   "type": "Inner",
+   "joins": [],
+   "ruleGroup": {
+    "typeName": "UdmQueryRuleGroup",
+    "id": "a75bf8e2-5a18-1f53-7561-bdb8a268389f",
+    "collapsed": false,
+    "name": "",
+    "not": false,
+    "ignored": false,
+    "operator": "And",
+    "rules": []
+   }
+  }
+ ],
+ "properties": [
+  {
+   "identifier": "NetworkEndpointHost",
+   "queryId": "b8021c6f-5592-3420-a6bc-c65ba31e46b5",
+   "groupLevel": 0,
+   "aggregation": null,
+   "sort": null,
+   "startOfWeek": null,
+   "transform": null
+  },
+  {
+   "identifier": "NetworkEndpointPort",
+   "queryId": "b8021c6f-5592-3420-a6bc-c65ba31e46b5",
+   "groupLevel": 0,
+   "aggregation": null,
+   "sort": null,
+   "startOfWeek": null,
+   "transform": null
+  },
+  {
+   "identifier": "NetworkEndpointProtocolType",
+   "queryId": "b8021c6f-5592-3420-a6bc-c65ba31e46b5",
+   "groupLevel": 0,
+   "aggregation": null,
+   "sort": null,
+   "startOfWeek": null,
+   "transform": null
+  },
+  {
+   "identifier": "EntityName",
+   "queryId": "0181a1c1-f6e2-06fa-bcfb-4b156cc454a3",
+   "groupLevel": 0,
+   "aggregation": null,
+   "sort": null,
+   "startOfWeek": null,
+   "transform": null
+  }
+ ],
+ "ruleGroup": {
+  "typeName": "UdmQueryRuleGroup",
+  "id": "25a18440-54ca-c6e8-1e68-3140355be155",
+  "collapsed": false,
+  "name": "",
+  "not": false,
+  "ignored": false,
+  "operator": "And",
+  "rules": [
+   {
+    "typeName": "UdmQueryRelationRule",
+    "id": "69605426-235b-daa4-526a-27369edcdad2",
+    "ignored": false,
+    "not": false,
+    "relationPropertyIdentifier": "NetworkEndpointNetworkDynamicAnalysisResource",
+    "ruleGroup": {
+     "typeName": "UdmQueryRuleGroup",
+     "id": "7b7426d2-44e5-f497-5cbd-914e6c7376e4",
+     "collapsed": false,
+     "name": "",
+     "not": false,
+     "ignored": false,
+     "operator": "And",
+     "rules": [
+      {
+       "typeName": "UdmQueryRule",
+       "id": "1c9e327d-420f-2ade-7c99-c16cbce4f32b",
+       "ignored": false,
+       "not": false,
+       "operator": "In",
+       "propertyIdentifier": "EntityNetworkAccessType",
+       "values": [
+        "ExternalDirect"
+       ]
+      },
+      {
+       "typeName": "UdmQueryRule",
+       "id": "3c058ad0-3a96-1fc5-c41e-2903a051d92e",
+       "ignored": false,
+       "not": false,
+       "operator": "In",
+       "propertyIdentifier": "EntityNetworkAccessScope",
+       "values": [
+        "Wide",
+        "All"
+       ]
+      },
+      {
+       "typeName": "UdmQueryRelationRule",
+       "id": "a7b44c14-427a-0316-e2c5-d28fa68996c3",
+       "ignored": false,
+       "not": false,
+       "relationPropertyIdentifier": "EntityPackageVulnerabilityInstances",
+       "ruleGroup": {
+        "typeName": "UdmQueryRuleGroup",
+        "id": "89b40c13-9c0a-973d-c3f9-52502731c2ae",
+        "collapsed": false,
+        "name": "",
+        "not": false,
+        "ignored": false,
+        "operator": "And",
+        "rules": [
+         {
+          "typeName": "UdmQueryRuleGroup",
+          "id": "883580fb-5fb9-fcd4-4f05-e47f773e106c",
+          "collapsed": false,
+          "name": "",
+          "not": false,
+          "ignored": false,
+          "operator": "And",
+          "rules": [
+           {
+            "typeName": "UdmQueryRule",
+            "id": "d35e2bc7-6e0b-7bc5-b4ca-e8df7c0c22ac",
+            "ignored": false,
+            "not": false,
+            "operator": "In",
+            "propertyIdentifier": "PackageVulnerabilityInstanceStatus",
+            "values": [
+             "Open"
+            ]
+           }
+          ]
+         },
+         {
+          "typeName": "UdmQueryRelationRule",
+          "id": "09d342b2-7995-4a75-e389-b73677e0c7a3",
+          "ignored": false,
+          "not": false,
+          "relationPropertyIdentifier": "PackageVulnerabilityInstanceVulnerability",
+          "ruleGroup": {
+           "typeName": "UdmQueryRuleGroup",
+           "id": "ebd9adb0-d490-91fe-45c7-17fa70419ac5",
+           "collapsed": false,
+           "name": "",
+           "not": false,
+           "ignored": false,
+           "operator": "And",
+           "rules": [
+            {
+             "typeName": "UdmQueryRuleGroup",
+             "id": "362221bf-1e1a-0440-6ae6-23a7f27eeaec",
+             "collapsed": false,
+             "name": "",
+             "not": false,
+             "ignored": false,
+             "operator": "And",
+             "rules": [
+              {
+               "typeName": "UdmQueryRule",
+               "id": "c30ec691-b154-4335-e743-fbdc0a08aa7a",
+               "ignored": false,
+               "not": false,
+               "operator": "In",
+               "propertyIdentifier": "VulnerabilityAttackVector",
+               "values": [
+                "Network"
+               ]
+              },
+              {
+               "typeName": "UdmQueryRule",
+               "id": "42ba7528-dd34-6adb-171b-f258c3df1b77",
+               "ignored": false,
+               "not": false,
+               "operator": "In",
+               "propertyIdentifier": "VulnerabilityAttackComplexity",
+               "values": [
+                "Low"
+               ]
+              }
+             ]
+            },
+            {
+             "typeName": "UdmQueryRuleGroup",
+             "id": "f18e0ffd-7d69-004a-edfc-6135212aa722",
+             "collapsed": false,
+             "name": "",
+             "not": false,
+             "ignored": false,
+             "operator": "Or",
+             "rules": [
+              {
+               "typeName": "UdmQueryRule",
+               "id": "d92f0354-455e-4dea-4892-419847b4d480",
+               "ignored": false,
+               "not": false,
+               "operator": "Gte",
+               "propertyIdentifier": "VulnerabilityEpssScore",
+               "values": [
+                0.3
+               ]
+              },
+              {
+               "typeName": "UdmQueryRule",
+               "id": "3c38b277-45cf-b5f2-ed4f-28c4d0e9cc1a",
+               "ignored": false,
+               "not": false,
+               "operator": "Equals",
+               "propertyIdentifier": "VulnerabilityVprV2MetricsOnCisaKev",
+               "values": [
+                true
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

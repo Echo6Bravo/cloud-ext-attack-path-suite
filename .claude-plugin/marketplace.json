@@ -1,0 +1,23 @@
+{
+  "name": "cloud-ext-attack-path-suite",
+  "version": "1.0.0",
+  "description": "High-fidelity external attack-path agent for Tenable Cloud Security. Reports only running, internet-direct workloads whose observed listening service carries a remotely exploitable vulnerability backed by public evidence (EPSS or CISA KEV), tiered by cloud-identity blast radius. Ships in two editions: an MCP edition (tcs connector) and an API-token edition (GraphQL Bearer token, no connector).",
+  "owner": {
+    "name": "Ryan Bragg",
+    "email": "rbragg@tenable.com"
+  },
+  "plugins": [
+    {
+      "name": "ext-attack-path-agent",
+      "source": "./plugins/ext-attack-path-agent",
+      "description": "MCP edition. Runs the external attack-path sweep through the Tenable Cloud Security (tcs) MCP connector's Explore/UDM tools, assembles the three datasets, applies the self-tested gate spec, and writes a two-tier HTML attack-path report. Optionally scheduled to run daily.",
+      "keywords": ["cloud-security", "tenable", "attack-path", "cnapp", "exposure", "epss", "cisa-kev", "cspm"]
+    },
+    {
+      "name": "ext-attack-path-agent-api",
+      "source": "./plugins/ext-attack-path-agent-api",
+      "description": "API-token edition. Runs the same external attack-path sweep via the Tenable Cloud Security public GraphQL API with a Bearer token and no MCP connector, for headless/scheduled use. Produces the same two-tier HTML attack-path report.",
+      "keywords": ["cloud-security", "tenable", "attack-path", "graphql", "api-token", "headless", "cnapp", "epss"]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "A": [
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0aaaa1111bbbb2222","name":"web-frontend-prod","type":"AwsEc2Instance","tenant":"111111111111","privileged":true,"identity_ids":["ExampleAppServerRole"]},
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0cccc3333dddd4444","name":"win-rdp-jumpbox","type":"AwsEc2Instance","tenant":"111111111111","privileged":true,"identity_ids":["ExampleAdminRole"]},
+    {"instance_id":"//compute.googleapis.com/projects/222222222222/zones/us-central1-a/instances/api-gateway-vm","name":"api-gateway-vm","type":"GcpComputeInstance","tenant":"222222222222","privileged":false,"identity_ids":["ServiceAccount/999999999999999999999"]},
+    {"instance_id":"/33333333-3333-3333-3333-333333333333/resourceGroups/demo/providers/Microsoft.Compute/virtualMachines/legacy-ssh-host","name":"legacy-ssh-host","type":"AzureComputeVirtualMachine","tenant":"33333333-3333-3333-3333-333333333333","privileged":false,"identity_ids":["example-managed-identity"]}
+  ],
+  "B": [
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0aaaa1111bbbb2222","name":"web-frontend-prod","ports":[{"port":22,"protocol":"TCP"},{"port":443,"protocol":"HTTPS"}]},
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0cccc3333dddd4444","name":"win-rdp-jumpbox","ports":[{"port":3389,"protocol":"TCP"}]},
+    {"instance_id":"//compute.googleapis.com/projects/222222222222/zones/us-central1-a/instances/api-gateway-vm","name":"api-gateway-vm","ports":[{"port":80,"protocol":"HTTP"},{"port":443,"protocol":"HTTPS"}]},
+    {"instance_id":"/33333333-3333-3333-3333-333333333333/resourceGroups/demo/providers/Microsoft.Compute/virtualMachines/legacy-ssh-host","name":"legacy-ssh-host","ports":[{"port":22,"protocol":"TCP"}]}
+  ],
+  "C": [
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0aaaa1111bbbb2222","name":"web-frontend-prod","type":"AwsEc2Instance","cve":"CVE-2024-38475","component":"apache2","cvss":9.1,"epss":0.94,"kev":true,"poc":true,"severity":"High","gate_reason":"both"},
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0aaaa1111bbbb2222","name":"web-frontend-prod","type":"AwsEc2Instance","cve":"CVE-2023-38408","component":"openssh-server","cvss":9.8,"epss":0.80,"kev":false,"poc":true,"severity":"High","gate_reason":"epss"},
+    {"instance_id":"arn:aws:ec2:us-east-1:111111111111:instance/i-0cccc3333dddd4444","name":"win-rdp-jumpbox","type":"AwsEc2Instance","cve":"CVE-2025-59287","component":"Windows Server 2022","cvss":9.8,"epss":0.99,"kev":true,"poc":true,"severity":"Critical","gate_reason":"both"},
+    {"instance_id":"//compute.googleapis.com/projects/222222222222/zones/us-central1-a/instances/api-gateway-vm","name":"api-gateway-vm","type":"GcpComputeInstance","cve":"CVE-2023-25690","component":"nginx","cvss":9.8,"epss":0.84,"kev":false,"poc":true,"severity":"High","gate_reason":"epss"},
+    {"instance_id":"/33333333-3333-3333-3333-333333333333/resourceGroups/demo/providers/Microsoft.Compute/virtualMachines/legacy-ssh-host","name":"legacy-ssh-host","type":"AzureComputeVirtualMachine","cve":"CVE-2023-38408","component":"openssh-server","cvss":9.8,"epss":0.80,"kev":false,"poc":true,"severity":"High","gate_reason":"epss"},
+    {"instance_id":"//compute.googleapis.com/projects/222222222222/zones/us-central1-a/instances/api-gateway-vm","name":"api-gateway-vm","type":"GcpComputeInstance","cve":"CVE-2011-3389","component":"libgnutls30","cvss":7.5,"epss":0.73,"kev":false,"poc":true,"severity":"Medium","gate_reason":"epss"}
+  ],
+  "counts": {"A":4,"B":4,"C":6},
+  "_note": "SYNTHETIC sample data — fabricated account IDs, hostnames, and instance IDs for demonstration only. Not from any real environment. The last C row (libgnutls30, a non-listening TLS library) is intentionally included to show the component-to-port post-filter correctly excluding it."
+}

@@ -1,0 +1,20 @@
+{
+  "name": "ext-attack-path-agent",
+  "version": "1.0.0",
+  "description": "High-fidelity external attack-path sweep for Tenable Cloud Security via the tcs MCP connector (Explore/UDM). Reports only running, internet-direct virtual machines whose observed listening service carries a remotely exploitable (AV:N, AC:Low) vulnerability with public evidence (EPSS >= 0.30 OR CISA KEV), correlates the vulnerable component to the exposed port, and tiers findings by cloud-identity blast radius. Writes a self-contained two-tier HTML report; can run daily.",
+  "author": {
+    "name": "Ryan Bragg",
+    "email": "rbragg@tenable.com"
+  },
+  "keywords": [
+    "cloud-security",
+    "tenable",
+    "attack-path",
+    "cnapp",
+    "exposure",
+    "epss",
+    "cisa-kev",
+    "cspm"
+  ],
+  "license": "MIT"
+}
