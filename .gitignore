@@ -1,0 +1,77 @@
+# =============================================================================
+#  SENSITIVE / ASSESSMENT DATA — never commit
+#  Real assessment data and rendered reports contain live cloud account IDs,
+#  hostnames, public IPs, service-account identifiers, and findings.
+#  Only the synthetic sample under data/sample/ is tracked.
+# =============================================================================
+/data/*
+!/data/sample/
+/data/sample/*.tmp
+/output/*
+!/output/.gitkeep
+
+# Any ad-hoc assessment artifacts, regardless of location
+assembled.json
+endpoint_ips.json
+*-report.html
+attack-paths-report.html
+
+# --- Credentials, keys, tokens, secrets -------------------------------------
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+id_rsa*
+id_ed25519*
+*.ppk
+.env
+.env.*
+*.env
+credentials
+credentials.*
+*credentials*.json
+*secret*.json
+*token*.json
+.netrc
+.npmrc
+*.tfstate
+*.tfstate.*
+*.tfvars
+service-account*.json
+gcp-*.json
+aws-credentials*
+azure-credentials*
+.aws/
+.azure/
+.gcloud/
+
+# --- Raw API pulls / scratch that may contain real data ---------------------
+*.raw.json
+raw_*.json
+pull_*.json
+scratch/
+tmp/
+*.dump
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- OS / editor ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
