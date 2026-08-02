@@ -1,7 +1,7 @@
 # Cloud External Attack-Path Report
 
-A repeatable, **vendor-neutral** report generator that surfaces *genuine externally
-exposed attack paths* in a cloud environment using **Tenable Cloud Security** (UDM /
+A repeatable **Tenable Cloud Security** report generator that surfaces *genuine externally
+exposed attack paths* in a cloud environment using Tenable Cloud Security (UDM /
 Explore). It finds running, internet-facing virtual machines whose **observed listening
 service** carries a **remotely exploitable** vulnerability backed by **independent public
 evidence of real-world risk**, and tiers them by the privilege of the workload's cloud
@@ -42,8 +42,8 @@ raw vulnerability dump.
 - **High-fidelity, not high-volume.** A validated-endpoint requirement plus a
   component-to-port correlation removes local-privilege-escalation and client-side CVEs
   that can't actually be reached over the exposed port.
-- **Vendor-neutral thresholds.** Qualification uses only public/standard signals (CVSS
-  vector attributes, EPSS, CISA KEV) — no dependency on proprietary scores.
+- **Standards-based thresholds.** Qualification uses public/standard signals (CVSS
+  vector attributes, EPSS, CISA KEV) rather than proprietary blended scores.
 - **Two-tier output** by identity blast radius, rendered as a self-contained HTML report
   with per-finding attack-path diagrams, evidence, exposed IP:port, and remediation.
 
@@ -186,6 +186,21 @@ demonstrate the component-to-port exclusion removing it.
 
 > A future enhancement could automate step 2 with a small fetch script that calls the API
 > and writes `assembled.json` directly.
+
+### Printing to PDF
+
+The report ships with a print stylesheet, so no extra tooling is needed. Open the HTML in
+a browser and choose **File → Print → Save as PDF**:
+
+- Paper **Letter or A4**, default margins.
+- Enable **"Background graphics"** so severity colors render.
+
+On print, the on-screen dark theme automatically switches to a **high-contrast,
+ink-friendly light palette**, each tier starts on a fresh page, and findings (cards,
+diagrams, table rows) are kept from splitting across page breaks — so it reads like a
+professional printed report. Generating a separate PDF file per run is intentionally
+*not* built in: it would require a heavyweight headless-browser/PDF dependency, whereas
+the print stylesheet keeps the tool dependency-free and always in sync with the HTML.
 
 ## Extending & maintaining
 
