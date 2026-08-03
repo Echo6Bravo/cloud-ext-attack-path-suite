@@ -23,9 +23,11 @@ Initial public release — the Cloud External Attack-Path Suite.
   truncation banners; print-to-PDF stylesheet.
 - **Assembler** (`assemble.py`) — streams raw MCP pages into `assembled.json`; structure-aware
   instance-Id parsing across AWS/GCP/Azure shapes.
-- **Scaling**: per-account/region chunking (`run_chunked.sh`) with a deterministic
-  size-then-plan selector; headless cursor-paginated pull (`fetch_all.sh`) with 429/5xx
-  retry+backoff.
+- **Scaling**: turnkey one-command MCP orchestrator (`run_attack_path.sh`) — auto-detects the
+  connector, auto-sizes the tenant, plans chunks deterministically, confirms, fans out one
+  headless `claude` session per account/region chunk (full fidelity, every gate intact), and
+  merges into one report; partial-failure tolerant (exit 3 + coverage-gap note). API edition:
+  headless cursor-paginated pull (`fetch_all.sh`) with 429/5xx retry+backoff.
 - **Schema-drift canary** — validates required UDM/GraphQL fields against live metadata before
   pulling, and fails loud on a rename.
 - **Layered remediation** — exact-CVE, per-service (~35 services), then a component/port-named

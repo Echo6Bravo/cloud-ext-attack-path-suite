@@ -308,6 +308,14 @@ if fails:
     sys.exit(1)
 PY
 
+echo "== 13. orchestrator end-to-end (run_attack_path.sh, mocked claude CLI) =="
+# size -> plan -> fan-out -> merge -> render, both tenant + per-account modes + guards.
+if bash tests/test_orchestrator.sh >/tmp/_orch.log 2>&1; then
+  ok "orchestrator: $(grep -Eo '[0-9]+ passed' /tmp/_orch.log | head -1) (tenant+fanout+guards)"
+else
+  bad "orchestrator end-to-end"; sed -n 's/^/    /p' /tmp/_orch.log | grep -i fail | head
+fi
+
 echo ""
 [ $FAIL -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit $FAIL
