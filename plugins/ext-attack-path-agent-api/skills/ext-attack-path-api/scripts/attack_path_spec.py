@@ -752,9 +752,9 @@ def _selftests():
     assert "VirtualMachineStatus" in json.dumps(build_inventory_query())
     assert "VirtualMachineStatus" not in json.dumps(build_endpoints_query()["ruleGroup"])
     # per-account chunk scoping: EntityTenant is a CommonId (relation to ITenantEntity) and does
-    # NOT accept `In`, so account scope is applied as a relation rule on EntityTenant filtering
-    # EntityProviderRawId (the provider-native account id). Verify: no scope leaks into an
-    # unscoped query, and a scoped query carries the tenant relation + provider-id rule + value.
+    # NOT accept `In`, so account scope is applied as a relation rule on EntityTenant filtering the
+    # tenant's `Id` (the cross-provider system id, NOT EntityProviderRawId). Verify: no scope leaks
+    # into an unscoped query, and a scoped query carries the tenant relation + Id rule + value.
     for builder in (build_inventory_query, build_endpoints_query, build_cve_query):
         unscoped=json.dumps(builder()["ruleGroup"])
         assert "EntityTenant" not in unscoped, \
@@ -840,9 +840,13 @@ def _cli_plan(argv):
         _die("missing <sizes.json> path argument")
     path=argv[0]
     budget=ROWS_PER_RUN
-    if len(argv)>1 and not argv[1].startswith("-"):
+    # The optional budget is argv[1] when it isn't a flag. A negative number (e.g. "-5") starts
+    # with "-" but is NOT a flag -- treat "-<digits>" as an (invalid) budget so it can't be
+    # silently swallowed as a flag and fall back to the default.
+    if len(argv)>1 and (not argv[1].startswith("-") or argv[1][1:].isdigit()):
         try: budget=int(argv[1])
         except ValueError: _die(f"budget must be an integer, got {argv[1]!r}")
+        if budget<1: _die(f"budget must be a positive integer (>=1), got {budget}")
     try:
         with open(path) as _f: data=json.load(_f)
     except FileNotFoundError:
