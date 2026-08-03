@@ -26,6 +26,14 @@ PERR=$(python3 attack_path_spec.py plan /tmp/nonexistent-sizes.json 2>&1; echo "
 if echo "$PERR" | grep -q "rc=2" && ! echo "$PERR" | grep -q "Traceback"; then
   ok "plan CLI fails cleanly on bad input (no traceback)"
 else bad "plan CLI bad-input handling: $PERR"; fi
+# zero/negative budget must be REJECTED (exit 2), not silently accepted or defaulted.
+printf '{"accounts":{"a":10}}' > /tmp/_bsz.json
+BZERO=$(python3 attack_path_spec.py plan /tmp/_bsz.json 0 2>&1; echo "rc=$?")
+BNEG=$(python3 attack_path_spec.py plan /tmp/_bsz.json -5 2>&1; echo "rc=$?")
+if echo "$BZERO" | grep -q "rc=2" && echo "$BNEG" | grep -q "rc=2" \
+   && ! echo "$BNEG" | grep -q '"budget": 4000'; then
+  ok "plan CLI rejects zero/negative budget (no silent default)"
+else bad "plan budget guard: zero='$BZERO' neg='$BNEG'"; fi
 
 echo "== 3. assemble + render (MCP full-gate mode, synthetic sample) =="
 python3 render_report.py --data ./data/sample --out /tmp/_r.html >/dev/null 2>&1 \
@@ -51,7 +59,9 @@ json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
 out=os.path.join(d,"r.html")
 subprocess.run([sys.executable,"render_report.py","--data",d,"--out",out],capture_output=True,text=True)
 html=open(out).read()
-print("Y" if ("noendpoint" not in html and "exposed" in html) else "N")
+# assert on the DISTINCTIVE cve ids, not the word "exposed" (which appears in static prose):
+# the endpoint-bearing host's CVE must appear; the no-endpoint host's CVE must NOT.
+print("Y" if ("CVE-2025-0002" not in html and "CVE-2025-0001" in html) else "N")
 PY
 )
 [ "$G4" = "Y" ] && ok "gate-4: no-endpoint host excluded from keep/review" || bad "gate-4 endpoint requirement leak (got '$G4')"
