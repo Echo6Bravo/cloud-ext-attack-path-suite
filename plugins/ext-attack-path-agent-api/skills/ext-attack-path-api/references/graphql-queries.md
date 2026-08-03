@@ -142,3 +142,14 @@ Then render (see `SKILL.md` step 5). **The report must state the fidelity gap.**
 - `Accesses[].Connections[]`: `DestinationPortRange, ProtocolRange, SourceIpAddressRange`
   (rule ranges only — not observed listeners).
 - Cursor pagination on every connection: `first`, `after`, `pageInfo{hasNextPage endCursor}`.
+- **Max page size is 1000** — `first:` above 1000 is rejected with error `HC0051`
+  ("maximum allowed items per page were exceeded"). `fetch_all.sh` defaults `PAGE=1000`.
+- **Scope the vuln pull with `ResourceIds`.** `VulnerabilityInstances(filter:{Resolved:false})`
+  alone returns *every open vuln in the tenant* (millions of rows at scale). `fetch_all.sh`
+  first collects the exposed-VM Ids (phase 1) and passes them as
+  `filter:{Resolved:false, ResourceIds:[...]}` (batched), so phase 2 pulls vulns only for
+  the qualifying subset — the key scaling decision. Do NOT drop this scoping.
+- **Do not server-side filter by severity as a proxy for evidence.** Verified against live
+  data: Low/Medium-severity CVEs can have EPSS ≥ 0.30 and must qualify, so a
+  `VulnerabilitySeverities:[Critical,High]` pre-filter would silently drop real findings.
+  Keep the EPSS/maturity + AV:N test client-side.

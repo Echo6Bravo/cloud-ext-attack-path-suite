@@ -112,11 +112,15 @@ the first page.
 `component` comes from `Software.Name`. Then render:
 ```bash
 python3 ../../scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
-    --out ./output/attack-paths-report-api.html
+    --no-endpoint --out ./output/attack-paths-report-api.html
 ```
-The renderer still applies its stopped-VM safety net and component post-filter; with no
-port data, gate 8 degrades to component display (as designed for this edition). For large
-environments the same `--max-cards` / `--max-cves-per-host` caps apply (see MCP SKILL.md).
+`--no-endpoint` puts the renderer in **reduced mode**: because dataset B is empty, gate 8
+degrades to the *listening-component* test only (keeps sshd/nginx/httpd/etc., still drops
+clients/libraries like Thunderbird/libgnutls/kernel), the stopped-VM net still applies, and
+the report is bannered as reduced-fidelity (candidates, port not confirmed). The renderer
+also auto-enables this when B is empty, but pass the flag explicitly. Without it the full
+gate 8 would reject **every** row (no observed ports → nothing correlates). The same
+`--max-cards` / `--max-cves-per-host` scale caps apply (see MCP SKILL.md).
 
 ### 6. Deliver — and STATE THE FIDELITY GAP
 Present the report path and a 2–3 sentence summary. **Every API-edition report must
