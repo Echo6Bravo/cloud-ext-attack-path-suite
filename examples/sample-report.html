@@ -1,0 +1,198 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>External Attack-Path Report</title><style>
+:root{--bg:#141a1c;--page:#0f1416;--card:#1e2426;--line:#2f393c;--ink:#fff;--ink2:#b9c4cc;--mut:#8595a2;--accent:#e7ff00;--crit:#ff5b5b;--high:#ff9f45;--med:#ffd200;--good:#35c46b}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.bar{height:4px;background:var(--accent)}
+header{padding:30px 40px 24px;background:linear-gradient(180deg,#1a2123,#12181a);border-bottom:1px solid var(--line)}
+.eyebrow{color:var(--accent);font-size:13.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;margin:0 0 10px}
+h1{margin:0 0 10px;font-size:24px;font-weight:800;max-width:1050px;color:var(--accent)}
+.meta-hdr{display:flex;flex-wrap:wrap;gap:8px 26px;font-size:12px;color:var(--ink2);margin-top:10px}
+.meta-hdr b{color:var(--ink)}
+.accts{margin-top:14px;padding:12px 16px;background:#12181a;border:1px solid var(--line);border-radius:10px}
+.acctshead{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin-bottom:6px}
+.acctrow{font-size:12px;color:var(--ink2);padding:2px 0}
+.acctprov{display:inline-block;min-width:78px;font-weight:700;color:var(--accent)}
+.acctids{font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.wrap{max-width:1280px;margin:0 auto;padding:24px 40px 60px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:6px 0 20px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;position:relative;overflow:hidden}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.kpi .n{font-size:30px;font-weight:800}.kpi .l{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+.kpi.red .n{color:var(--crit)}.kpi.red::before{background:var(--crit)}
+.exec{background:linear-gradient(180deg,#1c2325,#171d1f);border:1px solid var(--line);border-top:3px solid var(--accent);border-radius:12px;padding:22px 26px;margin:6px 0 18px}
+.exec-h{font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
+.exec p,.exec li{font-size:13.5px;line-height:1.62;color:var(--ink2)}.exec b{color:var(--ink)}
+.exec code{background:#0f1416;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px;color:var(--accent)}
+.exec-rec{background:#12181a;border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-top:8px}
+/* numbered sub-list (Priority actions, gate list): tight rows, hanging numerals */
+.sublist{list-style:none;margin:6px 0 2px 18px;padding:0}
+.sublist li{position:relative;padding:1px 0 1px 34px;font-size:13px;line-height:1.5;color:var(--ink2)}
+.sublist li .lbl{position:absolute;left:0;top:1px;width:24px;text-align:right;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}
+.note .sublist li{font-size:12.5px}
+/* worded-label sub-list (Tier 1 / Tier 2): real indented bullets, label inline so it
+   always aligns with its (possibly wrapping) description */
+.sublist.worded{list-style:disc;margin:6px 0 2px 34px;padding:0}
+.sublist.worded li{position:static;padding:4px 0;font-size:13px;line-height:1.5;color:var(--ink2)}
+.sublist.worded li::marker{color:var(--mut)}
+.sublist.worded li .lbl{position:static;font-weight:800;color:var(--accent);margin-right:6px}
+.note{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:15px 18px;margin:14px 0;font-size:12.5px;color:var(--ink2)}
+.note b{color:var(--ink)} .note code{color:var(--accent);font-size:11.5px}
+.tierband{margin:20px 0 14px;border-radius:12px;padding:16px 20px;border:1px solid var(--line)}
+.tierband.t1{background:linear-gradient(90deg,rgba(255,91,91,.16),rgba(255,91,91,.02));border-left:6px solid var(--crit)}
+.tierband.t2{background:linear-gradient(90deg,rgba(231,255,0,.16),rgba(231,255,0,.02));border-left:6px solid var(--accent)}
+.tierband .tt{font-size:17px;font-weight:800;color:var(--ink);letter-spacing:-.01em}
+.tierband .tt .cnt{display:inline-block;margin-left:10px;font-size:13px;font-weight:700;padding:2px 12px;border-radius:20px;vertical-align:middle}
+.tierband.t1 .cnt{background:var(--crit);color:#1a0000}
+.tierband.t2 .cnt{background:var(--accent);color:#141a1c}
+.tierband .ts{font-size:12.5px;color:var(--ink2);margin-top:6px;max-width:900px}
+.tierdivider{border:0;border-top:6px solid var(--mut);opacity:.55;margin:48px 0 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:12px 0}
+.card.t1{border-color:#4a3a12}
+.chead{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.rank{color:var(--accent);font-weight:800;margin-right:10px}.wl{font-weight:700;font-size:15px}
+.subline{color:var(--mut);font-size:11.5px;margin-top:3px}
+.badges{display:flex;gap:7px;flex-wrap:wrap}
+.badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;letter-spacing:.03em;text-transform:uppercase}
+.b-hi{background:rgba(255,91,91,.15);color:var(--crit);border:1px solid rgba(255,91,91,.4)}
+.b-std{background:rgba(133,149,162,.14);color:var(--ink2);border:1px solid var(--line)}
+.b-conf{background:rgba(53,196,107,.15);color:var(--good);border:1px solid rgba(53,196,107,.4)}
+.b-infer{background:rgba(133,149,162,.10);color:var(--mut);border:1px solid var(--line)}
+.b-kev{background:rgba(255,91,91,.2);color:#ff8a8a;border:1px solid rgba(255,91,91,.4)}
+.diagram{width:100%;height:auto;display:block;margin:4px 0 12px}
+.meta{display:grid;grid-template-columns:1fr 1fr;gap:3px 28px;font-size:12px;margin-bottom:10px}
+.meta b{color:var(--mut);font-weight:600}.meta code{color:#cdd7dd;font-size:11px;word-break:break-all}.roles{grid-column:1/3;color:#ffd9a0}
+table.vt{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+table.vt th{text-align:left;color:var(--mut);border-bottom:1px solid var(--line);padding:6px 7px;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+table.vt td{border-bottom:1px solid #262f31;padding:6px 7px;vertical-align:top;text-align:left}
+.cve a{color:var(--accent);text-decoration:none;font-weight:600}.num{text-align:left;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700}
+.ev{display:inline-block;padding:1px 8px;border-radius:5px;font-size:10.5px;font-weight:700;white-space:nowrap}
+.ev-epss{background:rgba(255,210,0,.16);color:var(--med);border:1px solid rgba(255,210,0,.4)}
+.ev-kev{background:rgba(255,91,91,.16);color:#ff8a8a;border:1px solid rgba(255,91,91,.4)}
+.ev-both{background:rgba(176,0,0,.35);color:#ffb3b3;border:1px solid rgba(255,91,91,.6)}
+.ipport{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#cdd7dd}
+footer{color:var(--mut);font-size:11px;padding:20px 40px;border-top:1px solid var(--line)}
+
+/* ===========================================================================
+   PRINT / PDF stylesheet.  Screen uses the dark Tenable theme; print flips to a
+   high-contrast light palette (ink-friendly, professional) and controls paging.
+   Produce a PDF via the browser: File > Print > Save as PDF (Letter/A4, default
+   margins, "Background graphics" ON so severity colors render).
+   =========================================================================== */
+@media print {
+  @page { size: Letter; margin: 14mm 12mm; }
+  :root{
+    --bg:#ffffff;--page:#ffffff;--card:#ffffff;--line:#c9ced6;--ink:#111418;
+    --ink2:#2b3138;--mut:#5b636e;--accent:#111418;
+    --crit:#b3261e;--high:#a15c00;--med:#8a6d00;--good:#1a7f37;
+  }
+  html,body{background:#fff !important;color:#111418 !important;font-size:11px}
+  .bar{background:#111418 !important;height:3px}
+  header{background:#fff !important;border-bottom:2px solid #111418;padding:0 0 12px}
+  .eyebrow{color:#5b636e !important}
+  h1{color:#111418 !important}
+  .accts,.exec,.note,.kpi,.exec-rec{background:#fff !important;
+    border:1px solid #c9ced6 !important;box-shadow:none !important}
+  .exec{border-top:2px solid #111418 !important}
+  .exec-h,.acctprov,.rank,.cve a{color:#0b5cad !important}   /* readable link/accent ink */
+  .kpi .n{color:#111418 !important}.kpi.red .n{color:#b3261e !important}
+  .kpi::before,.kpi.red::before{background:#111418 !important}
+  .wrap{padding:10px 0}
+  /* keep a finding on one page; never split a card, diagram, or table row */
+  .card{border:1px solid #c9ced6 !important;background:#fff !important;
+    break-inside:avoid;page-break-inside:avoid;margin:10px 0}
+  .card.t1{border-color:#b3261e !important}
+  .diagram,table.vt tr{break-inside:avoid;page-break-inside:avoid}
+  svg text{fill:#111418 !important}          /* diagram labels to dark ink */
+  .diagram rect[fill="#12181a"]{fill:#ffffff !important}
+  /* tier bands & divider: strong on white, and start each tier on a fresh page */
+  .tierband{background:#f2f3f5 !important;border:1px solid #c9ced6 !important}
+  .tierband.t1{border-left:6px solid #b3261e !important;break-before:auto}
+  .tierband.t2{border-left:6px solid #5b636e !important;break-before:page}
+  .tierband .tt,.tierband .ts{color:#111418 !important}
+  .tierband.t1 .cnt{background:#b3261e !important;color:#fff !important}
+  .tierband.t2 .cnt{background:#5b636e !important;color:#fff !important}
+  .tierdivider{border-top:3px solid #5b636e !important;opacity:1;margin:22px 0 0}
+  /* pills/badges: force ink + border so they read even if bg graphics are off */
+  .pill,.ev,.badge{color:#111418 !important;border:1px solid #8a8f98 !important}
+  .b-kev,.ev-kev,.ev-both{color:#b3261e !important;border-color:#b3261e !important}
+  a[href]{color:#0b5cad !important;text-decoration:none}
+  footer{color:#5b636e !important;border-top:1px solid #c9ced6 !important;padding:12px 0}
+  .meta code,.ipport{color:#2b3138 !important}
+}
+</style></head><body>
+<div class="bar"></div>
+<header>
+<p class="eyebrow">Cloud Security &middot; External Attack-Path Assessment</p>
+<h1>Externally Exposed Attack Paths: Internet-Reachable Services with Exploitable Vulnerabilities</h1>
+<div class="meta-hdr">
+<div><b>Report date:</b> 2026-08-03</div>
+<div><b>Environment:</b> multi-account (3 cloud accounts / projects / subscriptions)</div>
+<div><b>Scope:</b> running virtual machines, internet-facing (direct, wide/all-IP), with a validated listening endpoint</div>
+</div>
+<div class="accts"><div class="acctshead">Accounts in scope (3)</div><div class="acctrow"><span class="acctprov">AWS (1):</span> <span class="acctids">111111111111</span></div><div class="acctrow"><span class="acctprov">GCP (1):</span> <span class="acctids">222222222222</span></div><div class="acctrow"><span class="acctprov">Azure (1):</span> <span class="acctids">33333333-3333-3333-3333-333333333333</span></div></div>
+</header>
+<div class="wrap">
+<div class="kpis">
+<div class="kpi red"><div class="n">4</div><div class="l">Confirmed attack-path hosts</div></div>
+<div class="kpi red"><div class="n">2</div><div class="l">Tier 1 &mdash; privileged</div></div>
+<div class="kpi"><div class="n">2</div><div class="l">Tier 2 &mdash; standard</div></div>
+<div class="kpi"><div class="n">2</div><div class="l">On CISA KEV</div></div>
+</div>
+
+<div class="exec">
+<div class="exec-h">Executive Summary</div>
+
+<p>This assessment identifies <b>4 internet-facing virtual machines</b> across <b>3 cloud accounts</b> that expose a network service carrying a serious, remotely exploitable vulnerability. Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and every vulnerability is exploitable over the network and carries independent public evidence of real-world risk (high exploitation probability [EPSS &ge; 30%] or confirmed real-world exploitation).</p>
+<ul>
+<li><b>Findings are split into two tiers by identity privilege</b> &mdash; privilege is shown and tiered, not used to hide findings.
+<ul class="sublist worded">
+<li><span class="lbl">Tier 1</span><b>2 hosts</b> run an identity flagged as having severe/administrative permissions [SeverePermissionActionPrincipalAttribute] &mdash; here a service compromise can escalate to broad cloud control, so these are the priority.</li>
+<li><span class="lbl">Tier 2</span><b>2 hosts</b> are the same class of exposed, exploitable service on a standard-privilege identity &mdash; a real foothold, but contained blast radius.</li>
+</ul></li>
+<li><b>The exposed attack surface is concentrated in a few internet-facing services</b> &mdash; principally OpenSSH, Apache/nginx web servers, and (where reachable over RDP) Windows. Local-only and client-side vulnerabilities were deliberately excluded because they cannot be reached over the exposed port.</li>
+<li><b>2 host(s) carry a CISA-KEV vulnerability</b> (confirmed exploited in the wild) &mdash; the highest-urgency subset regardless of tier.</li>
+</ul>
+<div class="exec-rec"><b>Priority actions:</b>
+<ul class="sublist">
+<li><span class="lbl">1</span>Remediate Tier 1 first &mdash; patch the exposed service and restrict its port to a bastion/allowlist, and replace over-privileged (editor/owner-class) machine identities with least-privilege roles.</li>
+<li><span class="lbl">2</span>Treat any CISA-KEV finding as immediate across both tiers.</li>
+<li><span class="lbl">3</span>Reduce Tier 2 exposure by closing or gating internet-facing services that don't need to be public.</li>
+</ul></div>
+</div>
+
+<div class="note"><b>How each path qualifies (plain-English gate, in order; underlying attribute in brackets).</b>
+A workload appears only if <b>all</b> of the following hold, applied in this order:
+<ul class="sublist">
+<li><span class="lbl">1</span>it is a running VM [VirtualMachineStatus &ne; Stopped];</li>
+<li><span class="lbl">2</span>reachable directly from the internet [EntityNetworkAccessType = ExternalDirect];</li>
+<li><span class="lbl">3</span>open to a wide range of IPs [EntityNetworkAccessScope = Wide/All];</li>
+<li><span class="lbl">4</span>a live listening service was actually observed on an exposed port [NetworkEndpoint exists &mdash; ports come from the endpoint, never the firewall rule];</li>
+<li><span class="lbl">5</span>the finding is open [PackageVulnerabilityInstanceStatus = Open];</li>
+<li><span class="lbl">6</span>exploitable over the network [AttackVector = Network];</li>
+<li><span class="lbl">7</span>needs no unusual conditions [AttackComplexity = Low];</li>
+<li><span class="lbl">8</span>the vulnerable software is the service on the exposed port, not a local tool or client [component&harr;port correlation];</li>
+<li><span class="lbl">9</span><b>at least one</b> public threat signal: high exploitation probability [EPSS &ge; 0.30] <b>or</b> confirmed in-the-wild exploitation [CISA KEV].</li>
+</ul>
+<b>Signals intentionally not used as qualifying gates:</b>
+<ul class="sublist worded">
+<li><span class="lbl">CVSS base / impact score</span>&mdash; not used for qualification because CVSS is frequently overweighted relative to real-world exploitability and, applied as a threshold, admits more noise than signal.</li>
+<li><span class="lbl">VPR score</span>&mdash; not used because this methodology targets the underlying exploitability signals (network reachability, low attack complexity, exploitation likelihood, and confirmed in-the-wild use) directly.</li>
+<li><span class="lbl">Proof-of-concept availability</span>&mdash; not used as a gate because it tends to admit lower-impact and older findings that do not represent current, high-value exposure.</li>
+</ul>
+<b>Notes.</b> The published year shown per CVE is informational only and never affects inclusion; findings without a CVE identifier (e.g. distribution advisories) display a year of &ldquo;&mdash;&rdquo;. The stopped-instance exclusion is enforced at the query root and re-verified in post-processing so it cannot be inadvertently dropped. Because the threat-evidence gate relies on CVE-keyed public sources (EPSS and CISA KEV), findings without a CVE mapping are out of scope by design.</div>
+
+<hr class="tierdivider">
+<div class="tierband t1"><div class="tt">TIER 1 &mdash; Privileged Attack Paths <span class="cnt">2 hosts</span></div>
+<div class="ts">Internet-facing exploitable service on a workload whose identity holds severe/administrative permissions [SeverePermissionActionPrincipalAttribute]. A compromise here can escalate to broad cloud control &mdash; highest priority.</div></div>
+<div class="card t1"><div class="chead"><div><span class="rank">#1</span><span class="wl">win-rdp-jumpbox</span><div class="subline">AwsEc2Instance · AWS account 111111111111</div></div><div class="badges"><span class="badge b-hi">Privileged identity</span><span class="badge b-kev">CISA KEV</span><span class="badge b-hi">Recent Critical Vuln</span></div></div><svg viewBox="0 0 1200 206" xmlns="http://www.w3.org/2000/svg" class="diagram" preserveAspectRatio="xMidYMid meet"><defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8595a2"/></marker></defs><style>.nt{font-size:10px;font-weight:700;letter-spacing:.03em}.na{fill:#fff;font-size:12px}.na.lead{font-size:12.5px;font-weight:700}.na.bold{fill:#ffd9a0;font-size:11.5px;font-weight:700}.nb{fill:#8595a2;font-size:10.5px}.al{fill:#c9d3d8;font-size:10.5px;font-weight:600}</style><line x1="260.0" y1="117.0" x2="302.6666666666667" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="253" y="90.0" width="61" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="283" y="104" text-anchor="middle" class="al">exploit</text><line x1="576.6666666666667" y1="117.0" x2="619.3333333333334" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="566" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="600" y="104" text-anchor="middle" class="al">foothold</text><line x1="893.3333333333334" y1="117.0" x2="936.0" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="883" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="917" y="104" text-anchor="middle" class="al">escalate</text><rect x="0.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#e7ff00" stroke-width="2"/><path d="M12.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#e7ff00"/><text x="125" y="59" text-anchor="middle" class="nt" fill="#141a1c">🌐  EXPOSED SERVICE</text><text x="125" y="111.2" text-anchor="middle" class="na lead" font-size="12.5">Windows RDP/OS :3389</text><text x="125" y="133.8" text-anchor="middle" class="nb" font-size="10.5">203.0.113.20:3389</text><text x="125" y="154.2" text-anchor="middle" class="nb" font-size="10.5">Internet-reachable</text><rect x="316.6666666666667" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M328.6666666666667,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="442" y="59" text-anchor="middle" class="nt" fill="#fff">💥  EXPLOITABLE VULN</text><text x="442" y="110.8" text-anchor="middle" class="na lead" font-size="12.5">CVE-2025-59287 (2025)</text><text x="442" y="133.2" text-anchor="middle" class="na bold" font-size="11.5">Remotely exploitable</text><text x="442" y="154.8" text-anchor="middle" class="nb" font-size="10.5">EPSS 99% · CVSS 9.8 · KEV</text><rect x="633.3333333333334" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M645.3333333333334,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="758" y="59" text-anchor="middle" class="nt" fill="#fff">👤  CLOUD IDENTITY</text><text x="758" y="121.5" text-anchor="middle" class="na lead" font-size="12.5">ExampleAdminRole</text><text x="758" y="144.0" text-anchor="middle" class="nb" font-size="10.5">Privileged identity</text><rect x="950.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M962.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="1075" y="59" text-anchor="middle" class="nt" fill="#fff">⚠  HIGHEST-RISK ACTIONS</text><text x="1075" y="125.5" text-anchor="middle" class="nb" font-size="10.5">Compromise service → host →</text><text x="1075" y="140.0" text-anchor="middle" class="nb" font-size="10.5">project/account control</text></svg><div class="meta"><div><b>Validated open ports</b><br>3389</div><div><b>Identity</b><br>ExampleAdminRole</div></div><table class="vt"><tr><th>CVE</th><th>Yr</th><th>Exposed endpoint (IP:port)</th><th>Service</th><th>EPSS</th><th>CVSS</th><th>Sev</th><th>Evidence</th><th>Remediation</th></tr><tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-59287" target="_blank" rel="noopener noreferrer">CVE-2025-59287</a></td><td>2025</td><td class="ipport">203.0.113.20:3389</td><td>Windows RDP/OS</td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">99%</span></td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">9.8</span></td><td>Critical</td><td><span class="ev ev-both">&#9888; EPSS + KEV</span></td><td>Apply the out-of-band WSUS/Windows security update (Oct 2025); restrict 8530/8531.</td></tr></table></div><div class="card t1"><div class="chead"><div><span class="rank">#2</span><span class="wl">web-frontend-prod</span><div class="subline">AwsEc2Instance · AWS account 111111111111</div></div><div class="badges"><span class="badge b-hi">Privileged identity</span><span class="badge b-kev">CISA KEV</span><span class="badge b-hi">Recent Critical Vuln</span></div></div><svg viewBox="0 0 1200 206" xmlns="http://www.w3.org/2000/svg" class="diagram" preserveAspectRatio="xMidYMid meet"><defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8595a2"/></marker></defs><style>.nt{font-size:10px;font-weight:700;letter-spacing:.03em}.na{fill:#fff;font-size:12px}.na.lead{font-size:12.5px;font-weight:700}.na.bold{fill:#ffd9a0;font-size:11.5px;font-weight:700}.nb{fill:#8595a2;font-size:10.5px}.al{fill:#c9d3d8;font-size:10.5px;font-weight:600}</style><line x1="260.0" y1="117.0" x2="302.6666666666667" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="253" y="90.0" width="61" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="283" y="104" text-anchor="middle" class="al">exploit</text><line x1="576.6666666666667" y1="117.0" x2="619.3333333333334" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="566" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="600" y="104" text-anchor="middle" class="al">foothold</text><line x1="893.3333333333334" y1="117.0" x2="936.0" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="883" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="917" y="104" text-anchor="middle" class="al">escalate</text><rect x="0.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#e7ff00" stroke-width="2"/><path d="M12.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#e7ff00"/><text x="125" y="59" text-anchor="middle" class="nt" fill="#141a1c">🌐  EXPOSED SERVICE</text><text x="125" y="111.2" text-anchor="middle" class="na lead" font-size="12.5">Apache HTTP :443</text><text x="125" y="133.8" text-anchor="middle" class="nb" font-size="10.5">203.0.113.10:443</text><text x="125" y="154.2" text-anchor="middle" class="nb" font-size="10.5">Internet-reachable</text><rect x="316.6666666666667" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M328.6666666666667,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="442" y="59" text-anchor="middle" class="nt" fill="#fff">💥  EXPLOITABLE VULN</text><text x="442" y="110.8" text-anchor="middle" class="na lead" font-size="12.5">CVE-2024-38475 (2024)</text><text x="442" y="133.2" text-anchor="middle" class="na bold" font-size="11.5">Remotely exploitable</text><text x="442" y="154.8" text-anchor="middle" class="nb" font-size="10.5">EPSS 94% · CVSS 9.1 · KEV</text><rect x="633.3333333333334" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M645.3333333333334,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="758" y="59" text-anchor="middle" class="nt" fill="#fff">👤  CLOUD IDENTITY</text><text x="758" y="121.5" text-anchor="middle" class="na lead" font-size="12.5">ExampleAppServerRole</text><text x="758" y="144.0" text-anchor="middle" class="nb" font-size="10.5">Privileged identity</text><rect x="950.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M962.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="1075" y="59" text-anchor="middle" class="nt" fill="#fff">⚠  HIGHEST-RISK ACTIONS</text><text x="1075" y="125.5" text-anchor="middle" class="nb" font-size="10.5">Compromise service → host →</text><text x="1075" y="140.0" text-anchor="middle" class="nb" font-size="10.5">project/account control</text></svg><div class="meta"><div><b>Validated open ports</b><br>22, 443</div><div><b>Identity</b><br>ExampleAppServerRole</div></div><table class="vt"><tr><th>CVE</th><th>Yr</th><th>Exposed endpoint (IP:port)</th><th>Service</th><th>EPSS</th><th>CVSS</th><th>Sev</th><th>Evidence</th><th>Remediation</th></tr><tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-38475" target="_blank" rel="noopener noreferrer">CVE-2024-38475</a></td><td>2024</td><td class="ipport">203.0.113.10:443</td><td>Apache HTTP</td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">94%</span></td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">9.1</span></td><td>High</td><td><span class="ev ev-both">&#9888; EPSS + KEV</span></td><td>Upgrade Apache httpd to 2.4.60+ (mod_rewrite path handling).</td></tr><tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/CVE-2023-38408" target="_blank" rel="noopener noreferrer">CVE-2023-38408</a></td><td>2023</td><td class="ipport">203.0.113.10:22</td><td>OpenSSH (sshd)</td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">80%</span></td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">9.8</span></td><td>High</td><td><span class="ev ev-epss">EPSS</span></td><td>Upgrade OpenSSH to 9.3p2+; disable ssh-agent PKCS#11 forwarding (PermitAgentForwarding no).</td></tr></table></div>
+<hr class="tierdivider">
+<div class="tierband t2"><div class="tt">TIER 2 &mdash; Additional Externally Exposed Workloads <span class="cnt">2 hosts</span></div>
+<div class="ts">Same class of exposed, exploitable service on a standard-privilege identity. A real foothold, but contained blast radius.</div></div>
+<div class="card "><div class="chead"><div><span class="rank">#3</span><span class="wl">api-gateway-vm</span><div class="subline">GcpComputeInstance · GCP project 222222222222</div></div><div class="badges"><span class="badge b-std">Standard identity</span></div></div><svg viewBox="0 0 1200 206" xmlns="http://www.w3.org/2000/svg" class="diagram" preserveAspectRatio="xMidYMid meet"><defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8595a2"/></marker></defs><style>.nt{font-size:10px;font-weight:700;letter-spacing:.03em}.na{fill:#fff;font-size:12px}.na.lead{font-size:12.5px;font-weight:700}.na.bold{fill:#ffd9a0;font-size:11.5px;font-weight:700}.nb{fill:#8595a2;font-size:10.5px}.al{fill:#c9d3d8;font-size:10.5px;font-weight:600}</style><line x1="260.0" y1="117.0" x2="302.6666666666667" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="253" y="90.0" width="61" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="283" y="104" text-anchor="middle" class="al">exploit</text><line x1="576.6666666666667" y1="117.0" x2="619.3333333333334" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="566" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="600" y="104" text-anchor="middle" class="al">foothold</text><line x1="893.3333333333334" y1="117.0" x2="936.0" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="883" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="917" y="104" text-anchor="middle" class="al">escalate</text><rect x="0.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#e7ff00" stroke-width="2"/><path d="M12.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#e7ff00"/><text x="125" y="59" text-anchor="middle" class="nt" fill="#141a1c">🌐  EXPOSED SERVICE</text><text x="125" y="111.2" text-anchor="middle" class="na lead" font-size="12.5">nginx :80</text><text x="125" y="133.8" text-anchor="middle" class="nb" font-size="10.5">198.51.100.5:80</text><text x="125" y="154.2" text-anchor="middle" class="nb" font-size="10.5">Internet-reachable</text><rect x="316.6666666666667" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M328.6666666666667,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="442" y="59" text-anchor="middle" class="nt" fill="#fff">💥  EXPLOITABLE VULN</text><text x="442" y="110.8" text-anchor="middle" class="na lead" font-size="12.5">CVE-2023-25690 (2023)</text><text x="442" y="133.2" text-anchor="middle" class="na bold" font-size="11.5">Remotely exploitable</text><text x="442" y="154.8" text-anchor="middle" class="nb" font-size="10.5">EPSS 84% · CVSS 9.8</text><rect x="633.3333333333334" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#e7ff00" stroke-width="2"/><path d="M645.3333333333334,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#e7ff00"/><text x="758" y="59" text-anchor="middle" class="nt" fill="#141a1c">👤  CLOUD IDENTITY</text><text x="758" y="113.2" text-anchor="middle" class="na lead" font-size="12.5">ServiceAccount/9999999999999999</text><text x="758" y="129.8" text-anchor="middle" class="na lead" font-size="12.5">99999</text><text x="758" y="152.2" text-anchor="middle" class="nb" font-size="10.5">Standard identity</text><rect x="950.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#8595a2" stroke-width="2"/><path d="M962.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#8595a2"/><text x="1075" y="59" text-anchor="middle" class="nt" fill="#fff">⚠  HIGHEST-RISK ACTIONS</text><text x="1075" y="125.5" text-anchor="middle" class="nb" font-size="10.5">Compromise service → host →</text><text x="1075" y="140.0" text-anchor="middle" class="nb" font-size="10.5">host foothold</text></svg><div class="meta"><div><b>Validated open ports</b><br>80, 443</div><div><b>Identity</b><br>ServiceAccount/999999999999999999999</div></div><table class="vt"><tr><th>CVE</th><th>Yr</th><th>Exposed endpoint (IP:port)</th><th>Service</th><th>EPSS</th><th>CVSS</th><th>Sev</th><th>Evidence</th><th>Remediation</th></tr><tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/CVE-2023-25690" target="_blank" rel="noopener noreferrer">CVE-2023-25690</a></td><td>2023</td><td class="ipport">198.51.100.5:80</td><td>nginx</td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">84%</span></td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">9.8</span></td><td>High</td><td><span class="ev ev-epss">EPSS</span></td><td>Upgrade Apache httpd to 2.4.56+ (mod_proxy request smuggling).</td></tr></table></div><div class="card "><div class="chead"><div><span class="rank">#4</span><span class="wl">legacy-ssh-host</span><div class="subline">AzureComputeVirtualMachine · Azure subscription 33333333-3333-3333-3333-333333333333</div></div><div class="badges"><span class="badge b-std">Standard identity</span></div></div><svg viewBox="0 0 1200 206" xmlns="http://www.w3.org/2000/svg" class="diagram" preserveAspectRatio="xMidYMid meet"><defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8595a2"/></marker></defs><style>.nt{font-size:10px;font-weight:700;letter-spacing:.03em}.na{fill:#fff;font-size:12px}.na.lead{font-size:12.5px;font-weight:700}.na.bold{fill:#ffd9a0;font-size:11.5px;font-weight:700}.nb{fill:#8595a2;font-size:10.5px}.al{fill:#c9d3d8;font-size:10.5px;font-weight:600}</style><line x1="260.0" y1="117.0" x2="302.6666666666667" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="253" y="90.0" width="61" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="283" y="104" text-anchor="middle" class="al">exploit</text><line x1="576.6666666666667" y1="117.0" x2="619.3333333333334" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="566" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="600" y="104" text-anchor="middle" class="al">foothold</text><line x1="893.3333333333334" y1="117.0" x2="936.0" y2="117.0" stroke="#8595a2" stroke-width="2.2" marker-end="url(#ah)"/><rect x="883" y="90.0" width="68" height="19" rx="9.5" fill="#0f1416" stroke="#3a4548"/><text x="917" y="104" text-anchor="middle" class="al">escalate</text><rect x="0.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#e7ff00" stroke-width="2"/><path d="M12.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#e7ff00"/><text x="125" y="59" text-anchor="middle" class="nt" fill="#141a1c">🌐  EXPOSED SERVICE</text><text x="125" y="111.2" text-anchor="middle" class="na lead" font-size="12.5">OpenSSH (sshd) :22</text><text x="125" y="133.8" text-anchor="middle" class="nb" font-size="10.5">192.0.2.44:22</text><text x="125" y="154.2" text-anchor="middle" class="nb" font-size="10.5">Internet-reachable</text><rect x="316.6666666666667" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#ff5b5b" stroke-width="2"/><path d="M328.6666666666667,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#ff5b5b"/><text x="442" y="59" text-anchor="middle" class="nt" fill="#fff">💥  EXPLOITABLE VULN</text><text x="442" y="110.8" text-anchor="middle" class="na lead" font-size="12.5">CVE-2023-38408 (2023)</text><text x="442" y="133.2" text-anchor="middle" class="na bold" font-size="11.5">Remotely exploitable</text><text x="442" y="154.8" text-anchor="middle" class="nb" font-size="10.5">EPSS 80% · CVSS 9.8</text><rect x="633.3333333333334" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#e7ff00" stroke-width="2"/><path d="M645.3333333333334,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#e7ff00"/><text x="758" y="59" text-anchor="middle" class="nt" fill="#141a1c">👤  CLOUD IDENTITY</text><text x="758" y="121.5" text-anchor="middle" class="na lead" font-size="12.5">example-managed-identity</text><text x="758" y="144.0" text-anchor="middle" class="nb" font-size="10.5">Standard identity</text><rect x="950.0" y="42" width="250" height="150" rx="12" fill="#12181a" stroke="#8595a2" stroke-width="2"/><path d="M962.0,42 h226 a12,12 0 0 1 12,12 v14 h-250 v-14 a12,12 0 0 1 12,-12 z" fill="#8595a2"/><text x="1075" y="59" text-anchor="middle" class="nt" fill="#fff">⚠  HIGHEST-RISK ACTIONS</text><text x="1075" y="125.5" text-anchor="middle" class="nb" font-size="10.5">Compromise service → host →</text><text x="1075" y="140.0" text-anchor="middle" class="nb" font-size="10.5">host foothold</text></svg><div class="meta"><div><b>Validated open ports</b><br>22</div><div><b>Identity</b><br>example-managed-identity</div></div><table class="vt"><tr><th>CVE</th><th>Yr</th><th>Exposed endpoint (IP:port)</th><th>Service</th><th>EPSS</th><th>CVSS</th><th>Sev</th><th>Evidence</th><th>Remediation</th></tr><tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/CVE-2023-38408" target="_blank" rel="noopener noreferrer">CVE-2023-38408</a></td><td>2023</td><td class="ipport">192.0.2.44:22</td><td>OpenSSH (sshd)</td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">80%</span></td><td><span class="pill" style="background:#ff5b5b22;color:#ff5b5b">9.8</span></td><td>High</td><td><span class="ev ev-epss">EPSS</span></td><td>Upgrade OpenSSH to 9.3p2+; disable ssh-agent PKCS#11 forwarding (PermitAgentForwarding no).</td></tr></table></div>
+
+
+</div>
+<footer>
+Tenable Cloud Security (UDM/Explore) &middot; generated 2026-08-03. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR CISA-KEV). Ranked by privilege tier, then CISA-KEV, then EPSS. Post-filter: 1 CVE-rows dropped (client/library/local component, stopped host, or listening-port not exposed); 0 surfaced for review (exposed + exploitable but component not in the service map &mdash; never silently dropped). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
+</footer></body></html>

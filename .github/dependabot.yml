@@ -1,0 +1,12 @@
+version: 2
+# Keeps the SHA-pinned GitHub Actions fresh: when a pinned action publishes a new release,
+# Dependabot opens a PR bumping the digest (with the new version in the comment). This is the
+# maintenance half of "pin to immutable SHAs" (dimension 18) — pins give security, Dependabot
+# gives freshness, so pinning never leaves us stuck on an old, vulnerable action.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
