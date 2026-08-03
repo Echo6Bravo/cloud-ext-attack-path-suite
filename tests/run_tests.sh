@@ -56,6 +56,54 @@ else
   echo "  [SKIP] curl/jq not present; skipping caller test"
 fi
 
+echo "== 6. gate-8 false-negatives: exposed services surface, not silently dropped =="
+python3 - <<'PY' && ok "gate-8 keep/review/drop taxonomy" || bad "gate-8 taxonomy"
+import sys, attack_path_spec as s
+def st(comp,ports,**k): return s.post_filter({"component":comp},"Running",ports,**k)[0]
+checks = [
+  # (component, ports, expected) -- the classes the coverage audit found silently dropped
+  ("postgresql-14",{5432},"keep"), ("mongodb-org-server",{27017},"keep"),
+  ("elasticsearch",{9200},"keep"), ("docker-ce",{2375},"keep"), ("kubelet",{10250},"keep"),
+  ("vsftpd",{21},"keep"), ("bind9",{53},"keep"),
+  ("nginx",{443},"keep"),
+  ("some-inhouse-daemon",{8443},"review"),          # unknown exposed -> surfaced, never dropped
+  ("acme-proprietary-broker",{9999},"review"),      # 'tar' substring must NOT false-match
+  ("libgnutls30",{443},"drop"), ("openssh-client",{22},"drop"), ("thunderbird",{443},"drop"),
+]
+fails=[(c,p,e,st(c,p)) for c,p,e in checks if st(c,p)!=e]
+if fails:
+    for c,p,e,got in fails: print(f"    FAIL {c} {p}: expected {e}, got {got}")
+    sys.exit(1)
+PY
+
+echo "== 7. XSS/injection: malicious data in every field is neutralized (DOM-level check) =="
+python3 - <<'PY' && ok "report is injection-safe" || bad "XSS: live injection found"
+import json, os, subprocess, sys, html.parser, tempfile
+d=tempfile.mkdtemp()
+X="<script>alert(1)</script>"; ATTR='"><img src=x onerror=alert(2)>'
+A=[{"instance_id":"i-1","name":X,"type":ATTR,"tenant":"</td><script>a</script>","privileged":True,"identity_ids":["<svg onload=alert(4)>r"]}]
+B=[{"instance_id":"i-1","name":X,"ports":[{"port":443,"protocol":"HTTPS"}]}]
+C=[{"instance_id":"i-1","name":X,"type":ATTR,"cve":"CVE-<script>alert(5)</script>","component":"nginx","cvss":9.1,"epss":0.6,"kev":True,"severity":"<b>c</b>","poc":False,"gate_reason":"both","status":"Open"}]
+json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
+out=os.path.join(d,"r.html")
+subprocess.run([sys.executable,"render_report.py","--data",d,"--out",out],check=True,capture_output=True)
+bad=[]
+class P(html.parser.HTMLParser):
+    in_s=False
+    def handle_starttag(self,t,attrs):
+        for k,v in attrs:
+            if k.startswith("on"): bad.append(("event-attr",t,k))
+        if t=="script": self.in_s=True
+    def handle_endtag(self,t):
+        if t=="script": self.in_s=False
+    def handle_data(self,data):
+        if self.in_s and "alert(" in data: bad.append(("script-body",data[:30]))
+p=P(); p.feed(open(out).read())
+if bad:
+    for b in bad: print("    XSS FAIL:",b)
+    sys.exit(1)
+PY
+
 echo ""
 [ $FAIL -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit $FAIL
