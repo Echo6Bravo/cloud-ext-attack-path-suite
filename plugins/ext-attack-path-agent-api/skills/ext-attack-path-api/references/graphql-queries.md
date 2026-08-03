@@ -1,147 +1,144 @@
-# GraphQL queries — External Attack-Path Agent (API-token edition)
+# GraphQL queries — External Attack-Path Agent (API-token edition, reduced fidelity)
 
-The Tenable Cloud Security GraphQL schema is **environment- and version-specific**, so
-this file is a **mapping template with introspection skeletons**, not a set of hard-coded
-field names. Introspect the live schema first (Step 2 of the skill), fill in the mapping
-table below, then adapt the skeletons. The **detection contract is fixed** (see
-`SKILL.md`); only the field names you plug in change.
+These queries are **verified live** against `https://app.tenable.com/api/graph` by schema
+introspection and real execution (2026-08). They intentionally enforce only the subset of
+the detection contract the GraphQL API can express — see the fidelity table in `SKILL.md`.
+Send each via `scripts/tcs_graphql.sh` (query on stdin) and process with `jq`.
 
-All queries are sent via `scripts/tcs_graphql.sh` (reads a query on stdin, POSTs it with
-the Bearer token). Pipe results through `jq`.
+If a field ever errors as unknown, the schema changed — re-introspect with
+`__type(name:"TypeName"){ fields { name } }` and update this file. **Never invent fields.**
 
 ---
 
-## Step 0 — Confirm connectivity
+## 0. Connectivity
 
 ```bash
 echo 'query { __typename }' | ./scripts/tcs_graphql.sh
-# expect: {"data":{"__typename":"Query"}}  (or the schema's query root name)
+# → {"data":{"__typename":"Query"}}
 ```
 
-## Step 1 — Discover the query root and types
+## 1. Exposed VMs (gates 2–3: InternetDirect + Wide/All)
 
-```bash
-echo 'query { __schema { queryType { name } types { name kind } } }' \
-  | ./scripts/tcs_graphql.sh \
-  | jq '{root: .data.__schema.queryType.name, types: [.data.__schema.types[] | select(.kind=="OBJECT") | .name]}'
-```
-
-## Step 2 — Introspect the fields of the workload and finding types
-
-```bash
-# replace <WorkloadType> / <FindingType> with names discovered in Step 1
-echo 'query { __type(name:"<WorkloadType>"){ fields { name type { name kind ofType { name } } } } }' \
-  | ./scripts/tcs_graphql.sh | jq '.data.__type.fields[] | {name, type: (.type.name // .type.ofType.name)}'
-```
-
----
-
-## Mapping table — fill this in from introspection
-
-Record the concrete GraphQL path for each gate before pulling data. Leave a note in the
-report's verification section for any signal the schema cannot express.
-
-| Gate | UDM attribute (MCP edition) | GraphQL field / path (fill in) |
-|------|-----------------------------|-------------------------------|
-| 1 | `VirtualMachineStatus ≠ Stopped` | `________` |
-| 2 | `EntityNetworkAccessType = ExternalDirect` | `________` |
-| 3 | `EntityNetworkAccessScope ∈ {Wide, All}` | `________` |
-| 4 | network endpoint exists (host/port/protocol) | `________` |
-| 5 | `PackageVulnerabilityInstanceStatus = Open` | `________` |
-| 6 | `VulnerabilityAttackVector = Network` | `________` |
-| 7 | `VulnerabilityAttackComplexity = Low` | `________` |
-| 8 | component ↔ port (parse package name) | *(post-filter — parse package id)* |
-| 9 | `VulnerabilityEpssScore ≥ 0.30` OR CISA KEV | `________` (EPSS) / `________` (KEV) |
-| tier | `SeverePermissionActionPrincipalAttribute` | `________` |
-
----
-
-## Skeleton A — Inventory (Dataset A)
-
-Fetch qualifying workloads; apply the numeric/boolean gates server-side where the schema
-allows, otherwise in `jq`. Paginate on `pageInfo`.
+The GraphQL query root is `VirtualMachines` (a cursor connection). Exposure lives under
+`NetworkAccess.Inbound.Accesses[]`, each with `Type` (`NetworkInboundAccessType`:
+`Internal | InternetDirect | InternetIndirect`) and `Scope` (`NetworkAccessScope`:
+`All | None | Restricted | Wide`). There is **no** VM status field (gate 1 cannot be
+enforced) and **no** confirmed privileged/severe-permission field (no Tier 1/2 split).
 
 ```graphql
-query Inventory($after: String) {
-  <workloadsRoot>(first: 100, after: $after /* , filter: { ...gates 1-3... } */) {
+query ExposedVMs($after: String) {
+  VirtualMachines(first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
-      id
-      name
-      typeName
-      account: tenant            # -> EntityTenant
-      status                     # -> VirtualMachineStatus  (keep != Stopped)
-      networkAccessType          # -> ExternalDirect
-      networkAccessScope         # -> Wide|All
-      privileged: <severePermFlag>   # -> tiering (SeverePermissionActionPrincipalAttribute)
-      identity: <serviceIdentity>    # -> OriginatorEntityServiceIdentities
-      endpoints { nodes { host port protocol } }   # gate 4 presence
-      # findings { ... } to confirm a qualifying open vuln exists (gates 5-9)
+      Id
+      Name
+      Provider
+      AccountId
+      AccountName
+      Region
+      NetworkAccess { Inbound { Accesses { Type Scope } } }
     }
   }
 }
 ```
 
-Assemble each kept node into a Dataset-A row:
-`{"name":…, "type":…, "account":…, "status":…, "privileged":true|false, "identity":…}`.
+Keep a VM only if it has an access with `Type == "InternetDirect"` and
+`Scope in ["Wide","All"]`:
 
-## Skeleton B — Endpoints (Dataset B)
-
-```graphql
-query Endpoints($after: String) {
-  <workloadsRoot>(first: 100, after: $after) {
-    pageInfo { hasNextPage endCursor }
-    nodes { name endpoints { nodes { host port protocol } } }
-  }
-}
+```bash
+echo '<query above with $after inlined or paginated>' | ./scripts/tcs_graphql.sh \
+ | jq '[.data.VirtualMachines.nodes[]
+        | select(any(.NetworkAccess.Inbound.Accesses[]?;
+                     .Type=="InternetDirect" and (.Scope=="Wide" or .Scope=="All")))
+        | {id:.Id, name:.Name, provider:.Provider, account:.AccountId}]'
 ```
 
-Dedupe to `[{instance_id, name, ports:[{port, protocol}]}]`. Optionally build
-`endpoint_ips.json` = `{"endpoints":[{name, ip, port, protocol}]}` from host/port/protocol.
-**Ports come only from observed endpoints — never a security-group rule.**
+> **Ports (gate 4):** `Accesses[].Connections[]` exposes only `DestinationPortRange`,
+> `ProtocolRange`, `SourceIpAddressRange` — i.e. **security-group rule ranges, not an
+> observed listener**. The methodology forbids using SG ranges as endpoint evidence, so
+> this edition does **not** populate observed ports. Leave renderer dataset **B** empty.
 
-## Skeleton C — Qualifying CVEs (Dataset C)
+## 2. Qualifying vulnerabilities (gates 5, 6, reduced-9; component for reduced-8)
+
+Root `VulnerabilityInstances` (cursor connection). Server-side filter narrows to open
+findings (and optionally severities); the remaining gates are applied client-side because
+the filter input does not expose AV / EPSS / complexity.
+
+Filter input (`VulnerabilityInstancesFilterInput`) supports: `Resolved: Boolean`,
+`CvssSeverities/VprSeverities/VulnerabilitySeverities: [Severity]`, `SoftwareNames`,
+`SoftwareVersions`, `VulnerabilityIds`, `PluginIds`, `ResourceIds`, `ResourceTypes`.
 
 ```graphql
-query Findings($after: String) {
-  <findingsRoot>(first: 200, after: $after /* , filter: { status: OPEN } */) {
+query QualifyingVulns($after: String) {
+  VulnerabilityInstances(filter: { Resolved: false }, first: 200, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
-      workload { name typeName }
-      package { name }                 # -> component (for gate 8)
-      status                           # -> Open
-      vulnerability {
-        cveId
-        attackVector                   # -> Network
-        attackComplexity               # -> Low
-        epssScore                      # -> >= 0.30
-        cisaKev                        # -> CISA KEV passthrough
-        cvssScore                      # display only
-        proofOfConceptAvailable        # display only (NOT a gate)
+      Resolved
+      Software { Name Version }
+      Resource { Name }
+      Vulnerability {
+        Id
+        AttackVector          # enum: Adjacent | Local | Network | Physical
+        AttackComplexity?     # DOES NOT EXIST — do not select; gate 7 cannot be enforced
+        EpssScore             # Decimal 0..1
+        CvssScore             # Decimal (display only)
+        ExploitMaturity       # enum: Unproven | Poc | Functional | High  (KEV substitute)
+        Severity
       }
     }
   }
 }
 ```
 
-Keep a node only when: status Open AND attackVector Network AND attackComplexity Low AND
-(epssScore ≥ 0.30 OR cisaKev = true) AND the workload is one kept in Dataset A. Emit one
-Dataset-C row per (workload, CVE) with `component` set to the parsed package name.
+> Remove the `AttackComplexity?` line before sending — it is annotated only to record that
+> the field is absent. There is likewise **no** CISA-KEV boolean; `ExploitMaturity ∈
+> {Functional, High}` is used as a *weaker, different* real-world-exploitation signal.
 
-Example client-side gate arithmetic in `jq`:
+Keep a node only if network-exploitable AND publicly-evidenced:
 
 ```bash
-jq '[.data.<findingsRoot>.nodes[]
-     | select(.status=="Open")
-     | select(.vulnerability.attackVector=="Network")
-     | select(.vulnerability.attackComplexity=="Low")
-     | select((.vulnerability.epssScore // 0) >= 0.30 or (.vulnerability.cisaKev == true))
-     | {name: .workload.name, type: .workload.typeName, component: .package.name,
-        cve: .vulnerability.cveId, epss: .vulnerability.epssScore,
-        kev: .vulnerability.cisaKev, cvss: .vulnerability.cvssScore,
-        poc: .vulnerability.proofOfConceptAvailable}]'
+echo '<QualifyingVulns query>' | ./scripts/tcs_graphql.sh \
+ | jq '[.data.VulnerabilityInstances.nodes[]
+        | select(.Vulnerability.AttackVector == "Network")
+        | select((.Vulnerability.EpssScore // 0) >= 0.30
+                 or (.Vulnerability.ExploitMaturity == "Functional")
+                 or (.Vulnerability.ExploitMaturity == "High"))
+        | {cve: .Vulnerability.Id,
+           component: .Software.Name,          # reduced gate 8: name only, no port correlation
+           version: .Software.Version,
+           resource: .Resource.Name,
+           epss: .Vulnerability.EpssScore,
+           cvss: .Vulnerability.CvssScore,
+           maturity: .Vulnerability.ExploitMaturity,
+           severity: .Vulnerability.Severity}]'
 ```
 
-> **Do not relax a threshold to work around the schema.** If a signal is genuinely not
-> queryable, note it in the report's verification section rather than dropping the gate.
-> The renderer still applies gate 8 (component↔port) and the stopped-VM safety net.
+## 3. Join and assemble
+
+Intersect kept vulnerabilities with the kept exposed-VM set on resource/VM name, then
+emit the renderer's `assembled.json`:
+
+- **A (inventory):** one row per exposed VM that also has ≥1 qualifying vuln —
+  `{instance_id, name, type: Provider, tenant: AccountId, privileged: false, identity_ids: []}`.
+  (`privileged` is always `false` — the API exposes no severe-permission signal, so there
+  is no Tier 1.)
+- **B (endpoints):** **empty** — the API has no observed listener (gate 4 dropped).
+- **C (cve rows):** one row per (VM, qualifying CVE) with `component` = `Software.Name`.
+
+Then render (see `SKILL.md` step 5). **The report must state the fidelity gap.**
+
+---
+
+## Verified schema facts (introspected 2026-08)
+
+- Query root: `Query`. VM root: `VirtualMachines` → `VirtualMachine`. Vuln instances:
+  `VulnerabilityInstances` → `VulnerabilityInstance` → `.Vulnerability` (`Vulnerability`).
+- `Vulnerability` fields incl.: `AttackVector, CvssScore, CvssSeverity, EpssScore,
+  Exploitable, ExploitMaturity, Severity, VprScore, VprSeverity`. **No** `AttackComplexity`,
+  **no** CISA-KEV field.
+- `NetworkInboundAccessType`: `Internal | InternetDirect | InternetIndirect`.
+- `NetworkAccessScope`: `All | None | Restricted | Wide`.
+- `ExploitMaturity` (`ExportMaturity` enum): `Unproven | Poc | Functional | High`.
+- `Accesses[].Connections[]`: `DestinationPortRange, ProtocolRange, SourceIpAddressRange`
+  (rule ranges only — not observed listeners).
+- Cursor pagination on every connection: `first`, `after`, `pageInfo{hasNextPage endCursor}`.

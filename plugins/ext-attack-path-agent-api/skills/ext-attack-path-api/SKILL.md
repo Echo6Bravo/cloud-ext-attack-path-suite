@@ -1,28 +1,29 @@
 ---
 name: ext-attack-path-api
 description: >-
-  Autonomously produce a high-fidelity External Attack-Path report from live Tenable
+  Autonomously produce a REDUCED-FIDELITY external attack-path report from live Tenable
   Cloud Security data via the public GraphQL API with a Bearer API token (no MCP
-  connection). Same detection contract as the MCP edition: running, internet-direct
-  virtual machines whose observed listening service carries a remotely exploitable
-  (AV:N, AC:Low) vulnerability with public evidence (EPSS >= 0.30 OR CISA KEV),
-  component-to-port correlation, and cloud-identity-blast-radius tiering. Use for
-  headless/scheduled external attack-path triage where no MCP connector is available.
-  Never fabricates data — every fact comes from a query result.
+  connection). Reports internet-direct, wide-open virtual machines that carry an open,
+  network-exploitable (AV:N) vulnerability with public/real-world exploitation evidence
+  (EPSS >= 0.30 OR exploit maturity Functional/High), grouped by cloud provider/account.
+  This edition is a deliberate subset of the MCP edition — the GraphQL API cannot express
+  several gates the MCP/UDM edition enforces (see "Fidelity gap"). Use for headless /
+  scheduled triage where no MCP connector is available. Never fabricates data.
 ---
 
-# External Attack-Path Agent (API-token edition)
+# External Attack-Path Agent (API-token edition, reduced fidelity)
 
-Produce the **same** high-fidelity External Attack-Path report as the MCP edition, but
-sourced through the Tenable Cloud Security **public GraphQL API** with a **Bearer API
-token** — no MCP connector required. This edition is intended for headless / scheduled
-(e.g. daily cron) use. **Never fabricate data — every value must come from a query
-result.**
+Produce an external attack-path report from the Tenable Cloud Security **public GraphQL
+API** using a **Bearer API token** — no MCP connector required. Built for headless /
+scheduled (e.g. daily cron) use. **Never fabricate data — every value must come from a
+query result.**
 
-The detection contract, tiering, exclusions, and renderer are **identical** to the MCP
-edition. Only the data-access mechanism differs (GraphQL instead of UDM MCP tools). Read
-the MCP edition's `SKILL.md` for the full rationale behind each gate — this file focuses
-on the API mechanics and the UDM→GraphQL field mapping.
+> **This edition is intentionally lower-fidelity than the MCP edition.** The GraphQL API
+> exposes fewer of the signals the detection contract needs. Rather than pretend
+> otherwise, this agent enforces the subset the API *can* express, applies the rest
+> best-effort, and **states the gap in every report it writes**. When the richest results
+> matter, use the MCP edition (`ext-attack-path-agent`). The field mappings below were
+> **verified by live schema introspection** against `https://app.tenable.com/api/graph`.
 
 ## Prerequisites
 
@@ -37,119 +38,91 @@ on the API mechanics and the UDM→GraphQL field mapping.
   the token in the environment or a secrets manager — **never** commit it (the repo
   `.gitignore` blocks `*.env`, `*token*.json`, etc.).
 
-## The detection contract (do not weaken)
+## The MCP contract vs. what the GraphQL API can enforce
 
-`../../scripts/attack_path_spec.py` remains the single source of truth. Run
-`python3 ../../scripts/attack_path_spec.py` first — it must print `ALL SELF-TESTS PASSED`.
-A finding qualifies only if **all** of these hold, in order (identical to the MCP edition):
+`../../scripts/attack_path_spec.py` remains the single source of truth for the **full**
+contract (run `python3 ../../scripts/attack_path_spec.py`; it must print
+`ALL SELF-TESTS PASSED`). This edition maps each gate to the GraphQL API as follows —
+**verified live**, not assumed:
 
-| # | Stage | Gate (plain English) | UDM attribute → map to GraphQL |
-|---|-------|----------------------|--------------------------------|
-| 1 | Workload | **Running** VM (a stopped VM is not a live path) | `VirtualMachineStatus ≠ Stopped` |
-| 2 | Workload | Reachable **directly from the internet** | `EntityNetworkAccessType = ExternalDirect` |
-| 3 | Workload | Open to a **wide range of IPs** | `EntityNetworkAccessScope ∈ {Wide, All}` |
-| 4 | Exposure | A **live listening service observed** on an internet-facing port | network endpoint exists (host/port) |
-| 5 | Vuln | The finding is **open** | `PackageVulnerabilityInstanceStatus = Open` |
-| 6 | Vuln | **Exploitable over the network** | `VulnerabilityAttackVector = Network` |
-| 7 | Vuln | **No unusual conditions** to exploit | `VulnerabilityAttackComplexity = Low` |
-| 8 | Vuln | The vulnerable software **is the service on the exposed port** | component ↔ port (post-filter) |
-| 9 | Evidence | **At least one** public threat signal | `VulnerabilityEpssScore ≥ 0.30` **OR** on CISA KEV |
+| # | Full gate (MCP/UDM) | GraphQL API | Status |
+|---|---------------------|-------------|--------|
+| 1 | Running VM (`VirtualMachineStatus ≠ Stopped`) | *no VM status field exists* | ❌ **dropped** |
+| 2 | Internet-direct (`ExternalDirect`) | `VirtualMachine.NetworkAccess.Inbound.Accesses[].Type = InternetDirect` | ✅ enforced |
+| 3 | Wide/All scope | `...Accesses[].Scope ∈ {Wide, All}` | ✅ enforced |
+| 4 | **Observed listening endpoint** | only SG rule `Connections[].DestinationPortRange` exists (a *rule*, not an observed listener) | ❌ **dropped** — methodology forbids using SG ranges as evidence of a listener |
+| 5 | Open finding | `VulnerabilityInstances(filter:{Resolved:false})` | ✅ enforced |
+| 6 | AV:N | `Vulnerability.AttackVector = Network` | ✅ enforced |
+| 7 | AC:Low | *no AttackComplexity field exists* | ❌ **dropped** |
+| 8 | Component **is** the exposed service | `VulnerabilityInstance.Software.Name` available, but no observed port to correlate against | ⚠️ **partial** — software name is shown, not correlated to a port |
+| 9 | EPSS ≥ 0.30 **OR** CISA KEV | `Vulnerability.EpssScore` ✅; **no CISA-KEV field** — substitute `Vulnerability.ExploitMaturity ∈ {Functional, High}` | ⚠️ EPSS exact; KEV **substituted** (weaker, different signal) |
 
-**Deliberately NOT gates:** CVSS base/impact, VPR (proprietary), PoC availability. The one
-KEV field used is the public CISA-KEV passthrough. Findings without a CVE identifier are
-out of scope of the evidence gate by design (EPSS/KEV are CVE-keyed).
-
-Gate 8 is applied by `attack_path_spec.post_filter()` inside the renderer — you do not
-hand-implement it.
+**Net effect:** this edition finds *internet-direct, wide-open VMs with an open,
+network-exploitable, publicly-evidenced vulnerability*. It **cannot** confirm the workload
+is running, that a service is actually listening on a reachable port, that the vuln is
+low-complexity, or that the CVE is on CISA KEV. Treat its output as a **candidate list to
+triage**, not the defensible, de-noised path list the MCP edition produces. Do not relax
+the gates it *can* enforce to compensate.
 
 ## Workflow
 
-### 1. Verify the logic
-Run `python3 ../../scripts/attack_path_spec.py`; confirm `ALL SELF-TESTS PASSED`.
+### 1. Verify the shared spec
+Run `python3 ../../scripts/attack_path_spec.py`; confirm `ALL SELF-TESTS PASSED`. (It
+documents the full contract this edition is a subset of.)
 
-### 2. Introspect the GraphQL schema (do NOT assume field names)
-The GraphQL schema differs from UDM and evolves. **Introspect it, don't guess.** Run a
-type-introspection query through the caller to discover the concrete query root, the
-workload/finding types, and the field names that correspond to the UDM attributes in the
-table above:
-
+### 2. Confirm connectivity and (optionally) re-introspect
 ```bash
-echo 'query { __schema { queryType { name } types { name kind } } }' \
-  | ./scripts/tcs_graphql.sh | jq '.data.__schema.queryType, [.data.__schema.types[].name]'
+echo 'query { __typename }' | ./scripts/tcs_graphql.sh   # expect {"data":{"__typename":"Query"}}
 ```
-
-Then introspect the specific types (e.g. the workloads/entities root and the
-findings/vulnerabilities root) with `__type(name:"…"){ fields { name type { name kind
-ofType { name } } } }` to locate the fields that carry: network access type & scope,
-VM status, network endpoints (host/port/protocol), finding status, attack vector, attack
-complexity, EPSS score, CISA-KEV flag, the workload identity, and the privilege/severe-
-permission indicator. Record the mapping you find in `references/graphql-queries.md`
-before pulling data — the file ships with a mapping **template and worked skeletons** to
-fill in, not hard-coded field names, precisely because the schema is environment-specific.
+The mappings in `references/graphql-queries.md` are verified, but the schema can evolve —
+if a query errors on an unknown field, re-introspect (`__type(name:"…")`) and update the
+reference before continuing. **Never invent field names.**
 
 ### 3. Establish scope
-Query the distinct accounts/tenants by provider and capture the report date. State scope
-in the report header (accounts by provider; "running, internet-direct VMs only").
+Report the accounts/providers in scope from `VirtualMachine.Provider` / `AccountId`, and
+capture the report date.
 
-### 4. Pull the three datasets (paginate via cursors)
-Using the mapped fields, pull the same three datasets the renderer expects. GraphQL
-connections are cursor-paginated — loop on `pageInfo.hasNextPage` / `endCursor`, don't
-stop at the first page:
+### 4. Pull the data (cursor-paginated)
+Use the concrete queries in `references/graphql-queries.md`. GraphQL connections paginate
+on `pageInfo.hasNextPage` / `endCursor` — loop, don't stop at the first page.
 
-- **Dataset A — Inventory:** one row per qualifying workload. Filter (or post-filter in
-  `jq`) to running + ExternalDirect + Wide/All that also has a network endpoint AND a
-  qualifying open vuln. Set `privileged = true` from the severe-permission indicator.
-  Capture the identity string.
-- **Dataset B — Endpoints:** the observed network endpoints (host, port, protocol) for
-  those workloads. Dedupe to `[{instance_id, name, ports:[{port, protocol}]}]`; optionally
-  build `endpoint_ips.json`. **Ports come only from observed endpoints — never a
-  security-group rule.**
-- **Dataset C — CVEs:** one row per qualifying (workload, CVE): open, AV:N, AC:Low, and
-  (EPSS ≥ 0.30 OR CISA KEV). **Parse the package name and carry it as `component`** (from
-  the finding's package/instance identifier) so the renderer's gate-8 post-filter works.
-
-Because some gate arithmetic (the EPSS-OR-KEV evidence test, and the running/exposure
-filters) may be easier to express client-side, it is acceptable to fetch the candidate
-set and apply the numeric/boolean gates in `jq` — **as long as the resulting rows satisfy
-the exact same contract** as the table above. Do not relax a threshold to compensate for
-a schema limitation; if a signal genuinely isn't queryable, log that gap explicitly in
-the report's verification notes rather than dropping the gate silently.
+- **Exposed VMs:** `VirtualMachines(first:100, after:$cursor)`, selecting
+  `Name, Provider, AccountId, NetworkAccess { Inbound { Accesses { Type Scope } } }`.
+  Keep a VM only if some access has `Type = InternetDirect` AND `Scope ∈ {Wide, All}`
+  (gates 2–3). Note: privilege/severe-permission tiering (`SeverePermissionActionPrincipalAttribute`
+  in UDM) has **no** confirmed GraphQL field — everything lands in a single un-tiered list
+  unless you find a `Labels`/`CustomProperties` signal for it; if so, document it.
+- **Qualifying vulns:** `VulnerabilityInstances(filter:{Resolved:false, VulnerabilitySeverities:[…]}, first:200, after:$cursor)`,
+  selecting `Software { Name Version }, Resource { Name }, Vulnerability { Id AttackVector
+  EpssScore CvssScore ExploitMaturity Severity }`. Keep a node only if
+  `AttackVector = Network` AND (`EpssScore ≥ 0.30` OR `ExploitMaturity ∈ {Functional, High}`)
+  (gates 6 + reduced-9). Carry `Software.Name` as `component` (reduced gate 8).
 
 ### 5. Assemble and render (shared renderer)
-Write `assembled.json` as `{"A":[...],"B":[...],"C":[...]}` (and optionally
-`endpoint_ips.json`) to a working data directory, then:
-
+Map the kept rows into the renderer's dataset shape:
+`assembled.json = {"A":[inventory], "B":[endpoints], "C":[cve rows]}`. Because there is no
+observed endpoint (gate 4 dropped), populate **B** as empty per host (the renderer then
+shows no IP:port, which is correct — the API has none to show) and set each C row's
+`component` from `Software.Name`. Then:
 ```bash
 python3 ../../scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
-    --out ./output/attack-paths-report.html
+    --out ./output/attack-paths-report-api.html
 ```
+The renderer still applies its stopped-VM safety net and component post-filter; with no
+port data, gate 8 degrades to component display (as designed for this edition).
 
-The renderer applies gate 8 + the stopped-VM safety net, tiers by privilege, and writes
-the HTML. It holds no thresholds — it defers to the spec.
-
-### 6. Deliver
-Present the report path and a 2–3 sentence summary (population, Tier 1 vs Tier 2 count,
-KEV count, delta from prior run). Note PDF export via the browser print dialog. Flag
-demo/test-looking environments.
-
-## Tiering (ranking, not a gate)
-- **Tier 1 — Privileged Attack Paths:** workload identity holds severe/administrative
-  permissions. **Highest priority.**
-- **Tier 2 — Additional Externally Exposed Workloads:** same exposed, exploitable service
-  on a standard-privilege identity.
-
-## Style
-Concise and actionable. Quote all resource/identity/tenant IDs verbatim. Every number
-must trace to a query result.
+### 6. Deliver — and STATE THE FIDELITY GAP
+Present the report path and a 2–3 sentence summary. **Every API-edition report must
+include a prominent note** that it is reduced-fidelity: it did not verify running-state, a
+live listening endpoint, AC:Low, or CISA-KEV membership, and that findings are candidates
+to confirm (ideally re-run the MCP edition for the authoritative list). List the exact
+gates enforced vs. dropped (the table above). Flag demo/test-looking environments.
 
 ## Optional: run it daily (headless)
-This edition is built for unattended runs. Offer to install a cron/launchd entry that
-exports `TENABLE_CS_API_URL` / `TENABLE_CS_API_TOKEN` from a secrets store, invokes this
-skill's steps, writes a dated report, and emails/uploads it. Example crontab (07:00 daily):
-
+`run_daily.sh` verifies the spec and renders once `assembled.json` exists. Schedule the
+data pull ahead of it. Example crontab (07:00 daily):
 ```
 0 7 * * * cd /path/to/repo && TENABLE_CS_API_URL=... TENABLE_CS_API_TOKEN=... \
   bash plugins/ext-attack-path-agent-api/run_daily.sh >> /var/log/ext-attack-path.log 2>&1
 ```
-
-Keep real assessment data and the token out of version control.
+Keep the token and any real assessment data out of version control.
