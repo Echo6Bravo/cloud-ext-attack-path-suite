@@ -32,6 +32,10 @@ ap.add_argument("--max-cards",type=int,default=150,
                 help="max full per-host cards to render (0 = unlimited). Extra hosts go to a summary table.")
 ap.add_argument("--max-cves-per-host",type=int,default=25,
                 help="max CVE rows shown per host table (0 = unlimited); extras collapse to 'N more'.")
+ap.add_argument("--no-endpoint",action="store_true",
+                help="REDUCED mode (API/GraphQL edition): no observed endpoints available, so "
+                     "gate 8 degrades to the listening-component test only (no port correlation). "
+                     "Auto-enabled when dataset B is empty. Banners the report as reduced-fidelity.")
 args=ap.parse_args()
 
 DATE=args.date
@@ -50,11 +54,15 @@ NAMEPORTS={}
 for h in data["B"]: NAMEPORTS.setdefault(h["name"],set()).update(p["port"] for p in h["ports"])
 
 # ---- apply spec post-filter (Stage 3.4 component<->port + Stopped safety net) ----
+# Reduced mode: explicit --no-endpoint, or auto when the endpoint dataset B is empty
+# (the API/GraphQL edition has no observed listeners). Gate 8 then degrades to the
+# listening-component test only, and the report is bannered as reduced-fidelity.
+REDUCED = args.no_endpoint or (len(data["B"])==0 and len(data["C"])>0)
 paths=[]; excluded=[]
 for m in data["C"]:
     iid=m["instance_id"]; host=A.get(iid)
     vp = PORTS.get(iid) or NAMEPORTS.get(m["name"]) or set()
-    keep,reason = spec.post_filter(m, "Running", vp)   # status already gated in query; Running here
+    keep,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
     if not keep:
         excluded.append({**m,"reason":reason}); continue
     sk=spec.service_key(m["component"]); need=spec.SERVICE_PORTS.get(sk,set())
@@ -384,6 +392,19 @@ def accounts_block():
     return "".join(rows)
 cards1="".join(card(i+1,h) for i,h in enumerate(tier1))
 cards2="".join(card(n1p+i+1,h) for i,h in enumerate(tier2))
+# Reduced-mode framing (API/GraphQL edition: no observed endpoints, no port correlation).
+if REDUCED:
+    reduced_banner=('<div class="note" style="border-left-color:var(--high)"><b>&#9888; Reduced-fidelity report (API-token edition).</b> '
+        'This run used the public GraphQL API, which does not expose observed listening endpoints, VM running-state, '
+        'attack complexity, or a CISA-KEV flag. Findings are therefore <b>candidates</b>: hosts are internet-exposed '
+        '(direct, wide/all) and carry an open, network-exploitable vulnerability in a <i>listening-class</i> component, '
+        'but the exact open port was <b>not</b> confirmed and the workload was not confirmed running. '
+        'Re-run the MCP edition for the authoritative, endpoint-validated list.</div>')
+    confirm_sentence=("Each finding's vulnerable component is a listening-class service (clients/libraries excluded), "
+        "though the specific open port could not be confirmed via this API;")
+else:
+    reduced_banner=""
+    confirm_sentence=("Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and")
 
 HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>External Attack-Path Report</title><style>{CSS}</style></head><body>
@@ -408,7 +429,8 @@ HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="
 
 <div class="exec">
 <div class="exec-h">Executive Summary</div>
-<p>This assessment identifies <b>{len(allhosts)} running, internet-facing virtual machines</b> across <b>{len(accts)} cloud accounts</b> that expose a live network service carrying a serious, remotely exploitable vulnerability. Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and every vulnerability is exploitable over the network with no unusual conditions and carries independent public evidence of real-world risk (high exploitation probability [EPSS &ge; 30%] or confirmed exploitation on the CISA Known Exploited Vulnerabilities catalog).</p>
+{reduced_banner}
+<p>This assessment identifies <b>{len(allhosts)} internet-facing virtual machines</b> across <b>{len(accts)} cloud accounts</b> that expose a network service carrying a serious, remotely exploitable vulnerability. {confirm_sentence} every vulnerability is exploitable over the network and carries independent public evidence of real-world risk (high exploitation probability [EPSS &ge; 30%] or confirmed real-world exploitation).</p>
 <ul>
 <li><b>Findings are split into two tiers by identity privilege</b> &mdash; privilege is shown and tiered, not used to hide findings.
 <ul class="sublist worded">

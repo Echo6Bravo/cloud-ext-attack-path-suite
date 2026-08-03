@@ -337,13 +337,23 @@ def service_key(pkg:str):
         if k in p: return k
     return None
 
-def post_filter(match, host_status:str, validated_ports:set):
-    """Stage 1.1 re-check + Stage 3.4 component<->port correlation. Returns (kept, reason)."""
+def post_filter(match, host_status:str, validated_ports:set, require_port:bool=True):
+    """Stage 1.1 re-check + Stage 3.4 component<->port correlation. Returns (kept, reason).
+
+    require_port=True  (default, MCP edition): full gate 8 -- the component must be a
+        listening service AND an observed endpoint must expose one of its ports.
+    require_port=False (reduced/API edition, which has no observed endpoints): degrade
+        gate 8 to the listening-component test ONLY -- keep sshd/nginx/etc., still drop
+        clients/libs (Thunderbird, libgnutls, kernel, ...). This is weaker (it cannot
+        confirm the service is actually reachable on a port) and MUST be labeled reduced.
+    """
     if (host_status or "").lower()=="stopped":
         return (False, "host is Stopped (post-filter safety net)")
     sk=service_key(match["component"])
     if sk is None or not component_is_listening(match["component"]):
         return (False, f"component '{match['component']}' is not an internet-listening service")
+    if not require_port:
+        return (True, f"listening component: {sk} (reduced: no observed-port correlation)")
     need=SERVICE_PORTS.get(sk,set())
     if not (validated_ports & need):
         return (False, f"service {sk} needs {sorted(need)}; host exposes {sorted(validated_ports)}")
@@ -391,6 +401,11 @@ def _selftests():
     assert post_filter({"component":"Windows Server 2016"},"Running",{3389})[0] is True  # RDP-exposed Windows
     assert post_filter({"component":"Windows Server 2016"},"Running",{22})[0] is False   # no RDP => not reachable
     assert post_filter({"component":"openssh-server"},"Stopped",{22})[0] is False
+    # reduced mode (require_port=False, API edition: no observed ports available):
+    assert post_filter({"component":"apache2"},"Running",set(),require_port=False)[0] is True   # listening-class kept w/o port
+    assert post_filter({"component":"thunderbird"},"Running",set(),require_port=False)[0] is False  # client still dropped
+    assert post_filter({"component":"libgnutls30"},"Running",set(),require_port=False)[0] is False  # lib still dropped
+    assert post_filter({"component":"apache2"},"Stopped",set(),require_port=False)[0] is False  # stopped net still enforced
     # age proxy fail-open
     assert age_label("CVE-2023-38408")[0]=="2023"
     assert age_label("DLS-2761-1")==("Unknown","")     # non-CVE: never filtered
