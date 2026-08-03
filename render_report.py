@@ -14,11 +14,16 @@ tenant and saving the raw match arrays):
     endpoint_ips.json  {"endpoints":[{name,ip,port,protocol}]}   (optional; enriches IP:port)
 See README.md for the end-to-end run steps.
 """
-import json, html, sys, re, os, argparse, datetime
+import argparse
+import datetime
+import html
+import json
+import os
+import sys
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0,HERE)
-import attack_path_spec as spec   # single source of truth for gates + post-filter
+import attack_path_spec as spec  # noqa: E402 -- must follow sys.path.insert so the bundled spec resolves
 
 ap=argparse.ArgumentParser()
 ap.add_argument("--data",default=os.path.join(HERE,"data"),help="directory with assembled.json / endpoint_ips.json")
@@ -483,7 +488,6 @@ def vtable(h,name):
     out.append("</table>");return "".join(out)
 
 def card(i,h):
-    conf = "b-conf" if False else "b-infer"  # confirmation grading kept simple in this build
     badges=[f'<span class="badge {"b-hi" if h["privileged"] else "b-std"}">{"Privileged identity" if h["privileged"] else "Standard identity"}</span>']
     if h["anykev"]: badges.append('<span class="badge b-kev">CISA KEV</span>')
     if h["prim"]["recent"]: badges.append('<span class="badge b-hi">Recent Critical Vuln</span>')
@@ -522,7 +526,7 @@ def review_table(rows):
         k=(r["name"], (r.get("component") or "").lower())
         if k in seen: continue
         seen.add(k); uniq.append(r)
-    out=[f'<hr class="tierdivider">',
+    out=['<hr class="tierdivider">',
          f'<div class="tierband t2" style="border-left-color:var(--high)"><div class="tt">'
          f'&#9888; Needs review &mdash; exposed vulnerable components not in the service map '
          f'<span class="cnt" style="background:var(--high);color:#1a1200">{len(uniq)}</span></div>'

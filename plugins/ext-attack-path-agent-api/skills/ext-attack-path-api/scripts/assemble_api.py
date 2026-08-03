@@ -15,7 +15,11 @@ Inputs (from fetch_all.sh):
     gql_vulns_*.json   VulnerabilityInstances pages
 """
 from __future__ import annotations
-import json, os, glob, argparse
+
+import argparse
+import glob
+import json
+import os
 
 EPSS_FLOOR = 0.30
 MATURE = {"Functional", "High"}   # KEV substitute (documented as weaker/different)

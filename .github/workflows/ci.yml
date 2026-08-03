@@ -48,18 +48,31 @@ jobs:
       - name: Run suite (exercises the GraphQL caller on old curl)
         run: bash tests/run_tests.sh
 
-  shellcheck:
-    name: ShellCheck (bash portability lint)
+  lint:
+    name: Lint (ruff + bandit + shellcheck + actionlint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lint all shell scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
         run: |
+          pip install --quiet ruff bandit
           sudo apt-get -qq update && sudo apt-get -qq install -y shellcheck
-          # -e SC1090/SC1091: sourced-path resolution not relevant here
+          # actionlint via its official installer script
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+      - name: ruff (python lint)
+        run: ruff check .
+      - name: bandit (python SAST)
+        # asserts (B101) are intentional dev-time invariants; tests/dist/plugins excluded.
+        run: bandit -q -r . --skip B101 --exclude ./tests,./dist,./plugins
+      - name: shellcheck (bash)
+        run: |
           find . -name '*.sh' -not -path './dist/*' -print0 \
-            | xargs -0 shellcheck -S warning -e SC1090,SC1091 || true
-          echo "shellcheck advisory run complete"
+            | xargs -0 shellcheck -S warning -e SC1090,SC1091
+      - name: actionlint (workflow lint)
+        run: ./actionlint -color
 
   secret-scan:
     name: Secret scan (gitleaks, full history)
