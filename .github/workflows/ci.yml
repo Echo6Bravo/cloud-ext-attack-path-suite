@@ -23,7 +23,7 @@ jobs:
           - { python: "3.11", runner: "ubuntu-latest" }
           - { python: "3.12", runner: "ubuntu-latest" }
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v5.3.0
         with:
@@ -38,7 +38,7 @@ jobs:
     # if anyone reintroduces a modern-only curl flag.
     container: debian:buster-slim
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
       - name: Install old toolchain from archive
         run: |
           sed -i 's|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g; /buster-updates/d' /etc/apt/sources.list
@@ -52,7 +52,7 @@ jobs:
     name: Lint (ruff + bandit + shellcheck + actionlint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v5.3.0
         with:
           python-version: "3.12"
@@ -81,7 +81,7 @@ jobs:
       # fetch-depth: 0 pulls the ENTIRE history so a committed-then-deleted secret is caught,
       # not just the current tree. This is the unskippable third layer behind the PreToolUse
       # hook (pre-command) and quality-review (pre-submission).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
         with:
           fetch-depth: 0
       - name: Install gitleaks
