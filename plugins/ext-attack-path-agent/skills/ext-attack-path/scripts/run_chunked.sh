@@ -1,76 +1,98 @@
 #!/usr/bin/env bash
-# run_chunked.sh -- large-environment driver for the MCP edition.
+# run_chunked.sh -- large-environment driver for the MCP edition (Option 2: measured, not guessed).
 #
-# The MCP edition pulls data THROUGH the model's context, so a whole large tenant can't be
-# pulled in one run (see SKILL.md "Scaling"). This driver keeps FULL MCP fidelity by
-# chunking the pull BY CLOUD ACCOUNT: it runs one headless Claude session per account (each a
-# fresh context that resets between accounts), each appending its raw pages to a shared
-# raw/ dir, then assembles + renders ONE merged report across all accounts.
+# The MCP edition pulls data THROUGH the model's context, so a whole large tenant may not fit
+# one run. This driver keeps FULL MCP fidelity and chooses the pull strategy DETERMINISTICALLY
+# from measured CVE-row counts (the quantity that actually drives context cost):
 #
-# This is "much more scalable, not infinitely scalable": it scales to the size of the
-# LARGEST SINGLE ACCOUNT (which must still fit one context), not the whole estate. If one
-# account is itself too big, sub-chunk it by region (see --max-per-account guard below).
+#   1. SIZE:  an agent runs build_account_sizing_query() (a cheap grouped call) and writes the
+#             per-account (and per-region) CVE-row counts to a sizes.json.
+#   2. PLAN:  `attack_path_spec.py plan sizes.json <budget>` picks the mode deterministically:
+#               total <= budget            -> ONE tenant run     (cheapest; no per-run overhead xN)
+#               every account <= budget    -> one run per account (full fidelity, minimal chunks)
+#               an account > budget         -> that account split by region
+#               a region still > budget     -> reported as "oversized" (caller must narrow/accept)
+#   3. PULL:  one fresh headless `claude -p` per chunk, scoped via build_*_query(account=,region=),
+#             each writing account/region-tagged raw pages to a shared raw/ dir.
+#   4. MERGE: one assemble.py + render_report.py across all pages -> a single report.
 #
-# Prereqs: Claude Code CLI (`claude`) with the tcs MCP connector configured; python3.
+# Why this beats "always chunk by account": for a tenant that fits, it does ONE run instead of N,
+# avoiding N x (skill load + udm_get_instructions ~10-15k tokens + tool schemas) of overhead.
+#
+# Prereqs: Claude Code CLI (`claude`) with the tcs MCP connector; python3.
 # Usage:
-#   ./run_chunked.sh --accounts "111111111111 222222222222"    # explicit list, or
-#   ./run_chunked.sh --accounts-file accounts.txt              # one account id per line
-#   (obtain the list + per-account sizes from build_account_sizing_query(); see SKILL.md)
-# Optional: --data DIR (default ./data), --date YYYY-MM-DD, --max-per-account N (safety cap).
+#   ./run_chunked.sh --sizes sizes.json [--budget 4000] [--data ./data] [--date YYYY-MM-DD]
+# sizes.json shape:
+#   {"accounts":{"<id>":<cve_row_count>,...}, "regions":{"<id>|<region>":<count>,...}}
+# (regions optional; needed only to split an over-budget account.)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="./data"; DATE="$(date +%F)"; ACCOUNTS=""; ACCT_FILE=""; MAX_PER_ACCOUNT=0
+DATA_DIR="./data"; DATE="$(date +%F)"; SIZES=""; BUDGET=4000
 while [ $# -gt 0 ]; do
   case "$1" in
-    --accounts) ACCOUNTS="$2"; shift 2;;
-    --accounts-file) ACCT_FILE="$2"; shift 2;;
+    --sizes) SIZES="$2"; shift 2;;
+    --budget) BUDGET="$2"; shift 2;;
     --data) DATA_DIR="$2"; shift 2;;
     --date) DATE="$2"; shift 2;;
-    --max-per-account) MAX_PER_ACCOUNT="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
-[ -n "$ACCT_FILE" ] && ACCOUNTS="$(tr '\n' ' ' < "$ACCT_FILE")"
-if [ -z "$ACCOUNTS" ]; then
-  echo "No accounts given. Enumerate them first with the sizing query (build_account_sizing_query)," >&2
-  echo "then pass --accounts \"id1 id2 ...\" or --accounts-file accounts.txt." >&2
+if [ -z "$SIZES" ] || [ ! -f "$SIZES" ]; then
+  cat >&2 <<EOF
+Need a sizes.json. First have an agent run the sizing query and tally it:
+  - build_account_sizing_query(by="account")  -> per-account CVE-row counts
+  - build_account_sizing_query(by="region")   -> per (account,region) counts (for oversized accts)
+Write {"accounts":{...},"regions":{...}} to sizes.json, then re-run with --sizes sizes.json.
+EOF
   exit 2
 fi
 
-RAW_DIR="$DATA_DIR/raw"
-mkdir -p "$RAW_DIR"
-rm -f "$RAW_DIR"/raw_*.json 2>/dev/null || true   # fresh merge each run
+RAW_DIR="$DATA_DIR/raw"; mkdir -p "$RAW_DIR"; rm -f "$RAW_DIR"/raw_*.json 2>/dev/null || true
 
-echo "[$(date +%FT%T)] chunked MCP pull over $(echo $ACCOUNTS | wc -w) account(s)"
-i=0
-for acct in $ACCOUNTS; do
-  i=$((i+1))
-  echo "[$(date +%FT%T)] === account $i: $acct ==="
-  # One fresh headless Claude session PER account. The prompt tells the skill to scope to this
-  # account and write its raw pages into $RAW_DIR with an account-tagged prefix so pages merge.
-  # `claude -p` runs headless with a fresh context (the essential reset between accounts).
-  prompt="Run the ext-attack-path skill for Tenable Cloud Security, SCOPED TO CLOUD ACCOUNT ${acct} only.
-Use attack_path_spec.build_inventory_query(account='${acct}'), build_endpoints_query(account='${acct}'),
-and build_cve_query(account='${acct}') to generate the queries. Paginate each fully via the tcs MCP
-udm_execute_query tool. Save each raw response page verbatim to files named
-${RAW_DIR}/raw_A_${acct}_p<N>.json, raw_B_${acct}_p<N>.json, raw_C_${acct}_p<N>.json.
-Before pulling, run udm_get_query_results_count on the CVE query for this account; if it exceeds
-what one context can hold, STOP and report that this account must be sub-chunked by region --
-do not silently truncate. Do NOT assemble or render; only write raw pages."
+# --- 2. PLAN (deterministic) ---
+# Human-readable plan (for the log/_plan.json) and a machine-readable TSV (for the loop).
+python3 "$ROOT/attack_path_spec.py" plan "$SIZES" "$BUDGET" > "$RAW_DIR/_plan.json"
+PLAN_TSV="$(python3 "$ROOT/attack_path_spec.py" plan "$SIZES" "$BUDGET" --tsv)"
+MODE="$(printf '%s\n' "$PLAN_TSV" | awk -F'\t' '$1=="MODE"{print $2}')"
+OVERN="$(printf '%s\n' "$PLAN_TSV" | awk -F'\t' '$1=="MODE"{print $3}')"
+echo "[$(date +%FT%T)] plan: mode=$MODE budget=$BUDGET"
+# Fail LOUD on anything still over budget -- never silently truncate.
+if [ "${OVERN:-0}" != "0" ]; then
+  echo "[$(date +%FT%T)] WARNING: $OVERN scope(s) still over budget after region split (see $RAW_DIR/_plan.json)." >&2
+  echo "  They will be pulled but MAY be truncated by context. Narrow further (severity/time window) or raise --budget deliberately." >&2
+fi
+
+# Emit one Claude prompt for a given scope and run it headless (fresh context each).
+run_scope () {
+  local tag="$1" acct="$2" region="$3" scope_py
+  if [ "$tag" = "tenant" ]; then scope_py=""      # whole tenant: no account/region scoping
+  else scope_py="account='${acct}'"; [ -n "$region" ] && scope_py="${scope_py}, region='${region}'"; fi
+  local prompt="Run the ext-attack-path skill for Tenable Cloud Security, scope: ${tag}.
+Generate queries with attack_path_spec.build_inventory_query(${scope_py}),
+build_endpoints_query(${scope_py}), build_cve_query(${scope_py}); paginate each fully via the
+tcs MCP udm_execute_query tool. Save each raw response page verbatim to
+${RAW_DIR}/raw_A_${tag}_p<N>.json, raw_B_${tag}_p<N>.json, raw_C_${tag}_p<N>.json.
+Do NOT assemble or render; only write raw pages."
+  echo "[$(date +%FT%T)] --- pull scope: ${tag} ---"
   if command -v claude >/dev/null 2>&1; then
-    claude -p "$prompt" --allowedTools "mcp__tcs__udm_execute_query" "mcp__tcs__udm_get_query_results_count" "Write" \
-      || { echo "  [account $acct] claude run failed" >&2; exit 1; }
+    claude -p "$prompt" --allowedTools "mcp__tcs__udm_execute_query" "Write" </dev/null \
+      || { echo "  [${tag}] claude run failed" >&2; exit 1; }
   else
-    echo "  'claude' CLI not found. Run this prompt manually in a fresh Claude Code session:" >&2
-    echo "  ---"; echo "$prompt"; echo "  ---"
-    echo "  Then re-run this script to assemble once all accounts' raw pages exist." >&2
+    echo "  'claude' CLI not found. Run this prompt in a FRESH Claude Code session, then re-run to merge:" >&2
+    printf '  ---\n%s\n  ---\n' "$prompt"
   fi
-done
+}
 
-echo "[$(date +%FT%T)] assembling merged report across all accounts..."
-python3 "$ROOT/assemble.py" --raw "$RAW_DIR" --out "$DATA_DIR/assembled.json" \
-  --endpoint-ips "$DATA_DIR/endpoint_ips.json" ${MAX_PER_ACCOUNT:+}
-python3 "$ROOT/render_report.py" --data "$DATA_DIR" --date "$DATE" \
-  --out "./output/attack-paths-report-${DATE}.html"
+# --- 3. PULL per the plan (plain while-read over the TSV; no process substitution) ---
+printf '%s\n' "$PLAN_TSV" | grep -v '^MODE' > "$RAW_DIR/_chunks.tsv"
+while IFS=$'\t' read -r tag acct region; do
+  [ -z "$tag" ] && continue
+  run_scope "$tag" "$acct" "$region"
+done < "$RAW_DIR/_chunks.tsv"
+
+# --- 4. MERGE ---
+echo "[$(date +%FT%T)] assembling merged report..."
+python3 "$ROOT/assemble.py" --raw "$RAW_DIR" --out "$DATA_DIR/assembled.json" --endpoint-ips "$DATA_DIR/endpoint_ips.json"
+python3 "$ROOT/render_report.py" --data "$DATA_DIR" --date "$DATE" --out "./output/attack-paths-report-${DATE}.html"
 echo "[$(date +%FT%T)] done -> ./output/attack-paths-report-${DATE}.html"
