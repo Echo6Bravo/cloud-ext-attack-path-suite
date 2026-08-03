@@ -28,7 +28,9 @@ self-testing detection spec and one report renderer:
   membership, or workload privilege. It produces a **candidate list** and states the gap in
   every report. See that plugin's README for the verified gate-by-gate mapping.
 
-Either edition can run as a scheduled **daily agent** and report the day-over-day delta.
+Either edition can run as a scheduled **daily agent** and report the day-over-day delta —
+though for large tenants the MCP edition must be scoped per-account/region (its pages route
+through model context); the API edition's shell pull scales to any size. See *Scaling*.
 
 > **Fidelity note.** The two editions do **not** produce identical findings — the MCP
 > edition is authoritative; the API edition is a lower-fidelity fallback for environments
@@ -206,7 +208,9 @@ pick by how you connect to Tenable Cloud Security.
 **Run daily.** The API-token edition ships `plugins/ext-attack-path-agent-api/run_daily.sh`
 and a crontab example (see that edition's `SKILL.md`); the MCP edition can be driven by the
 Claude Code scheduler. Each run writes a dated report and summarizes the delta from the
-prior day.
+prior day. **Scheduling does not change the pull limit** (see below): a scheduled MCP run
+still routes every page through the model's context, so for large tenants use the
+API-token edition for unattended daily runs, or schedule the MCP skill per-account/region.
 
 **Submit to the Tenable Exchange.** `cloud-ext-attack-path-suite.md` is the listing file
 (agent front matter + description). Your code stays in this repo — submit the listing that

@@ -181,3 +181,17 @@ If the user wants continuous monitoring, offer to create a scheduled task (e.g. 
 writes a dated report to `./output/attack-paths-report-<YYYY-MM-DD>.html`, and summarizes
 the delta from the prior day. Keep real assessment data out of version control (see the
 repo `.gitignore`).
+
+> **⚠️ Scheduling does NOT lift the pull limit — pick the deployment by environment size.**
+> A scheduled MCP run has the **same** constraint as an interactive one: every
+> `udm_execute_query` page returns through the model's context (the model drives the
+> `skip`/`hasMore` loop), so a large tenant's thousands of CVE pages will overflow context
+> / time out no matter who launches it. Cron changes *when* it runs, not *how the data
+> flows*. Context compaction won't save it either — it would summarize away the raw rows
+> needed to assemble the report. Route by the **count** queries (step 3):
+> - **Small tenant** (C ≲ ~1,000 rows): schedule this MCP skill directly.
+> - **Large tenant**: for unattended/daily use, deploy the **API-token edition**
+>   (`ext-attack-path-agent-api`), whose `fetch_all.sh` paginates in a pure shell with
+>   **zero model context** (scales to any size) — or keep the MCP skill but schedule it
+>   **per-account/region** (add an `EntityTenant`/`EntityRegion` rule) so each run stays
+>   small, and merge the reports. Note the API edition is reduced-fidelity (see its README).
