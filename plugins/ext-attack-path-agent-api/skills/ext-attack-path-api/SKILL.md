@@ -71,13 +71,22 @@ the gates it *can* enforce to compensate.
 Run `python3 scripts/attack_path_spec.py`; confirm `ALL SELF-TESTS PASSED`. (It
 documents the full contract this edition is a subset of.)
 
-### 2. Confirm connectivity and (optionally) re-introspect
+### 2. Confirm connectivity and schema-drift canary (BEFORE pulling)
 ```bash
 echo 'query { __typename }' | ./scripts/tcs_graphql.sh   # expect {"data":{"__typename":"Query"}}
 ```
-The mappings in `references/graphql-queries.md` are verified, but the schema can evolve —
-if a query errors on an unknown field, re-introspect (`__type(name:"…")`) and update the
-reference before continuing. **Never invent field names.**
+Then verify the fields the queries depend on still exist — the GraphQL analogue of the MCP
+edition's `check_schema`. Introspect each type the pull uses and confirm the required fields
+are present, e.g.:
+```bash
+echo 'query { __type(name:"Vulnerability"){ fields { name } } }' | ./scripts/tcs_graphql.sh \
+  | jq -r '.data.__type.fields[].name' | grep -E 'AttackVector|EpssScore|ExploitMaturity' 
+```
+Required (see `references/graphql-queries.md` for the full map): `VirtualMachine.NetworkAccess.Inbound.Accesses{Type,Scope}`;
+`VulnerabilityInstance.{Resolved,Software.Name,Resource.Name}`; `Vulnerability.{AttackVector,EpssScore,ExploitMaturity}`.
+**If any required field is absent, STOP and report the missing field/type** — do not pull or
+render (a renamed field would silently return empty). The schema can evolve; **never invent
+field names** — re-introspect and update `references/graphql-queries.md` first.
 
 ### 3. Establish scope
 Report the accounts/providers in scope from `VirtualMachine.Provider` / `AccountId`, and
