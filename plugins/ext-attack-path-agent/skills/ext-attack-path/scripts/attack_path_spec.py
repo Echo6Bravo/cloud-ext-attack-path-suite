@@ -215,13 +215,37 @@ def build_population_query():
                        "sort":None,"startOfWeek":None,"transform":None}],
         "ruleGroup":root}
 
+def build_account_sizing_query():
+    """SIZING -- qualifying-host count grouped per cloud account (EntityTenant).
+    One cheap grouped call (validated live) returns a small result: [(account, count), ...],
+    used by the per-account chunk driver to (a) enumerate accounts to pull, (b) order them,
+    and (c) flag any single account too large to pull in one context (-> sub-chunk/fail loud).
+    Same gate chain as build_population_query, but group-by EntityTenant with ValueCount."""
+    q=build_population_query()
+    qid=q["id"]
+    q["groupLevel"]=1
+    q["properties"]=[
+        {"identifier":"EntityTenant","queryId":qid,"groupLevel":1,"aggregation":None,
+         "sort":None,"startOfWeek":None,"transform":None},
+        {"identifier":"EntityTenant","queryId":qid,"groupLevel":0,"aggregation":"ValueCount",
+         "sort":{"direction":"Descending","ordinal":0},"startOfWeek":None,"transform":None},
+    ]
+    return q
+
 # --- reusable sub-builders so the WHOLE pipeline is generated from the spec ---------
-def _workload_rules():
-    """Stage-1 workload rules (running + internet-direct + wide), incl. structural Stopped gate."""
+def _workload_rules(account=None):
+    """Stage-1 workload rules (running + internet-direct + wide), incl. structural Stopped gate.
+    If `account` is given, also scope to that tenant (EntityTenant In [account]) so the pull can
+    be chunked per cloud account -- the key large-environment scaling lever for the MCP edition
+    (each account is pulled in its own run/context; results merge in assemble.py). One account
+    or a list of accounts is accepted."""
     out=[]
     for g in GATES:
         if g.stage!="1": continue
         out.append(_rule(g.field,("In" if g.op=="NotIn" else g.op),g.value,negate=(g.op=="NotIn")))
+    if account:
+        vals=account if isinstance(account,list) else [account]
+        out.append(_rule("EntityTenant","In",vals))
     return out
 
 def _vuln_relation():
@@ -243,21 +267,23 @@ def _props(qid, idents):
     return [{"identifier":i,"queryId":qid,"groupLevel":0,"aggregation":None,"sort":None,
              "startOfWeek":None,"transform":None} for i in idents]
 
-def build_inventory_query():
+def build_inventory_query(account=None):
     """DATASET A -- one row per qualifying workload with tiering + identity fields.
-    Root = IVirtualMachine (Stopped gate structurally in scope)."""
+    Root = IVirtualMachine (Stopped gate structurally in scope).
+    `account` (optional): scope to one tenant for per-account chunked pulls."""
     validate_spec(); qid=assert_guid(hexguid())
     ep_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"NetworkDynamicAnalysisResourceNetworkEndpoints","ruleGroup":_group([],"And")}
-    root=_group(_workload_rules()+[ep_rel,_vuln_relation()],"And")
+    root=_group(_workload_rules(account)+[ep_rel,_vuln_relation()],"And")
     return {"typeName":"UdmQuery","objectTypeName":ROOT_OBJECT_TYPE,"groupLevel":0,"collapsed":False,
         "objectResultHidden":False,"timeZoneId":None,"id":qid,"joins":[],
         "properties":_props(qid,["EntityName","EntityTypeName","EntityTenant","VirtualMachineStatus",
             "EntityAttributes","OriginatorEntityServiceIdentities"]),"ruleGroup":root}
 
-def build_endpoints_query():
+def build_endpoints_query(account=None):
     """DATASET B -- validated listening endpoints (IP:port:protocol) for the qualifying population.
     Root = NetworkEndpoint, joined to the resource; population filter on the relation.
+    `account` (optional): scope to one tenant for per-account chunked pulls.
     NOTE: status is NOT selectable here, which is exactly why the Stopped gate must also live
     on the IVirtualMachine-rooted queries and in post_filter()."""
     validate_spec(); qid=assert_guid(hexguid()); jid=assert_guid(hexguid())
@@ -265,7 +291,7 @@ def build_endpoints_query():
         "propertyIdentifier":"NetworkEndpointNetworkDynamicAnalysisResource","type":"Inner","joins":[],
         "ruleGroup":_group([],"And")}
     # population filter (minus Stopped, which isn't in scope on this relation target)
-    wl=[g for g in _workload_rules() if g["propertyIdentifier"]!="VirtualMachineStatus"]
+    wl=[g for g in _workload_rules(account) if g["propertyIdentifier"]!="VirtualMachineStatus"]
     res_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"NetworkEndpointNetworkDynamicAnalysisResource",
         "ruleGroup":_group(wl+[_vuln_relation()],"And")}
@@ -276,9 +302,10 @@ def build_endpoints_query():
         "objectResultHidden":False,"timeZoneId":None,"id":qid,"joins":[join],
         "properties":props,"ruleGroup":_group([res_rel],"And")}
 
-def build_cve_query():
+def build_cve_query(account=None):
     """DATASET C -- per-host qualifying CVEs (with scores) for the population.
     Root = PackageVulnerabilityInstanceModel; joins expose the CVE and host.
+    `account` (optional): scope to one tenant for per-account chunked pulls.
     Post-filter still applies Stage-3.4 (component<->listening-port) to these rows."""
     validate_spec(); qid=assert_guid(hexguid()); jv=assert_guid(hexguid()); je=assert_guid(hexguid())
     # vuln-side structural+evidence rules, reused verbatim
@@ -288,7 +315,7 @@ def build_cve_query():
     vuln_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"PackageVulnerabilityInstanceVulnerability",
         "ruleGroup":_group([_group(structural,"And"),_group(evidence,"Or")],"And")}
-    wl=[g for g in _workload_rules() if g["propertyIdentifier"]!="VirtualMachineStatus"]
+    wl=[g for g in _workload_rules(account) if g["propertyIdentifier"]!="VirtualMachineStatus"]
     ent_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"PackageVulnerabilityInstanceEntity","ruleGroup":_group(wl,"And")}
     joinV={"typeName":"UdmQueryJoin","id":jv,"collapsed":False,"objectResultHidden":False,
@@ -427,6 +454,18 @@ def _selftests():
     # endpoint query must NOT carry a Stopped rule (not in scope there) but inventory MUST
     assert "VirtualMachineStatus" in json.dumps(build_inventory_query())
     assert "VirtualMachineStatus" not in json.dumps(build_endpoints_query()["ruleGroup"])
+    # per-account chunk scoping: EntityTenant rule present iff account passed, on all 3 builders
+    for builder in (build_inventory_query, build_endpoints_query, build_cve_query):
+        assert "EntityTenant" not in rule_fields(builder()["ruleGroup"]), \
+            f"{builder.__name__}: EntityTenant leaked into unscoped query"
+        scoped=builder(account="123456789012")
+        assert "EntityTenant" in rule_fields(scoped["ruleGroup"]), \
+            f"{builder.__name__}: account scope not applied"
+        assert "123456789012" in json.dumps(scoped["ruleGroup"])
+        walk(scoped)  # scoped queries must still have valid GUIDs / no rejected signals
+    # sizing query is a valid grouped count over EntityTenant
+    sz=build_account_sizing_query(); assert sz["groupLevel"]==1
+    assert any(p.get("aggregation")=="ValueCount" for p in sz["properties"])
     print("ALL SELF-TESTS PASSED")
     return q
 
