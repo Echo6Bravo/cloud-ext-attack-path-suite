@@ -328,8 +328,8 @@ enforced continuously, and a modern-only flag (e.g. `curl --fail-with-body`, whi
 
 **MCP edition** (`ext-attack-path-agent`)
 - The **`tcs` MCP connector** (UDM / Explore `udm_execute_query`). No shell tooling beyond
-  Python is required for the core; the optional `run_chunked.sh` driver needs **bash 3.2+**
-  and the **`claude` CLI** (for headless per-account runs).
+  Python is required for the core; the optional `run_attack_path.sh` orchestrator needs **bash 3.2+**
+  and the **`claude` CLI** (for turnkey headless fan-out across accounts at scale).
 
 **API-token edition** (`ext-attack-path-agent-api`)
 - **bash 3.2+** (macOS default; no bash-4 features used), **curl**, **jq 1.5+**.

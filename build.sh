@@ -28,6 +28,11 @@ sync_shared () {
   cp "$ROOT/attack_path_spec.py" "$skill_dir/scripts/attack_path_spec.py"
   cp "$ROOT/render_report.py"    "$skill_dir/scripts/render_report.py"
   cp "$ROOT/assemble.py"         "$skill_dir/scripts/assemble.py"   # MCP raw-page -> assembled.json
+  # turnkey one-command orchestrator (auto-size -> plan -> fan-out -> merge -> render).
+  # MCP edition only: it drives headless `claude -p` MCP sessions, irrelevant to the API edition.
+  case "$skill_dir" in
+    *ext-attack-path) cp "$ROOT/run_attack_path.sh" "$skill_dir/scripts/run_attack_path.sh" ;;
+  esac
   # sample data so the skill can be demoed offline
   mkdir -p "$skill_dir/scripts/data/sample"
   cp "$ROOT/data/sample/assembled.json"    "$skill_dir/scripts/data/sample/assembled.json"
