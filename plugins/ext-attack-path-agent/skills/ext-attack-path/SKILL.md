@@ -193,25 +193,31 @@ repo `.gitignore`).
 > - **Large tenant**: **chunk by cloud account** to keep full MCP fidelity (preferred), or
 >   fall back to the reduced-fidelity API edition. See "Chunked pull" below.
 
-### Chunked pull by cloud account (large tenants, full fidelity)
-The MCP limit is on volume pulled through the model **per run/context** — not on total
-work. So pull **one account per run** (each a fresh context) and merge:
+### Chunked pull — measured, not guessed (large tenants, full fidelity)
+The MCP limit is on volume pulled through the model **per run/context** — not on total work.
+The strategy is chosen **deterministically from measured CVE-row counts** (the quantity that
+actually drives context cost — a low-host account can still have thousands of CVE rows), so a
+tenant that fits does **one** cheap run and only larger ones chunk:
 
-1. **Size it.** Run `attack_path_spec.build_account_sizing_query()` once (a cheap grouped
-   `ValueCount` over `EntityTenant`; validated live). It returns `[(account, host_count), …]`
-   — a small result — so you learn the accounts and their sizes without pulling raw rows.
-2. **Route.** For each account, run `udm_get_query_results_count` on
-   `build_cve_query(account=<id>)`. If an account's own CVE count is still too large for one
-   context, **sub-chunk it by region** (or fail loud) — never silently truncate.
-3. **Pull per account, scoped.** The `build_*` functions take `account=<id>` and inject an
-   `EntityTenant` rule, so each run pulls only that account. Save each raw page to a shared
-   `data/raw/` with an account-tagged name (`raw_A_<acct>_p<N>.json`, etc.).
-4. **Merge + render once.** `assemble.py` globs all `raw_*` pages and dedupes hosts by
-   `instance_id`, so one `assemble.py` + `render_report.py` produces a single merged report
-   across every account (proven end-to-end).
+1. **Size it (CVE rows, not hosts).** Run `attack_path_spec.build_account_sizing_query()`
+   once — a cheap grouped `ValueCount` of **qualifying CVE rows** per account (and per region
+   with `by="region"`); validated live. Tally the results into
+   `sizes.json = {"accounts":{"<id>":<count>,…}, "regions":{"<id>|<region>":<count>,…}}`.
+2. **Plan deterministically.** `python3 scripts/attack_path_spec.py plan sizes.json <budget>`
+   (budget = max CVE rows per run, default `ROWS_PER_RUN=4000`) returns the mode:
+   - `total ≤ budget` → **one tenant run** (cheapest — avoids N× per-run overhead);
+   - every account `≤ budget` → **one run per account**;
+   - an account `> budget` → that account **split by region**;
+   - a region still `> budget` → reported in `oversized` (narrow further or accept — **never
+     silently truncated**).
+3. **Pull per chunk, scoped.** `build_*` functions take `account=`/`region=` and inject
+   `EntityTenant`/`EntityRegion` rules. Save each raw page to a shared `data/raw/` with a
+   scope-tagged name (`raw_A_<tag>_p<N>.json`).
+4. **Merge + render once.** `assemble.py` globs all `raw_*` pages and dedupes by
+   `instance_id` → one merged report (proven end-to-end).
 
-`scripts/run_chunked.sh` automates this (sizing → one headless `claude -p` per account →
-merge). **Scope note:** this scales to the size of the **largest single account** (which
-must still fit one context), not the whole estate — "much more scalable, not unbounded." For
-truly unbounded headless scale, the API edition's shell pull is the only option (reduced
-fidelity).
+`scripts/run_chunked.sh --sizes sizes.json [--budget N]` automates steps 2–4 (plan → one
+fresh headless `claude -p` per chunk → merge). **Scope note:** this scales to the size of the
+**largest single chunk** (one region of one account) that must still fit one context — "much
+more scalable, not unbounded." For truly unbounded headless scale, the API edition's shell
+pull is the only option (reduced fidelity).

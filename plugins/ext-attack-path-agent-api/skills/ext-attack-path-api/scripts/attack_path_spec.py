@@ -215,37 +215,95 @@ def build_population_query():
                        "sort":None,"startOfWeek":None,"transform":None}],
         "ruleGroup":root}
 
-def build_account_sizing_query():
-    """SIZING -- qualifying-host count grouped per cloud account (EntityTenant).
-    One cheap grouped call (validated live) returns a small result: [(account, count), ...],
-    used by the per-account chunk driver to (a) enumerate accounts to pull, (b) order them,
-    and (c) flag any single account too large to pull in one context (-> sub-chunk/fail loud).
-    Same gate chain as build_population_query, but group-by EntityTenant with ValueCount."""
-    q=build_population_query()
-    qid=q["id"]
+def build_account_sizing_query(by="region"):
+    """SIZING -- qualifying CVE-ROW count grouped per cloud account (and optionally region).
+
+    Rooted on PackageVulnerabilityInstanceModel and grouped on the joined EntityTenant, so it
+    counts the QUALIFYING CVE ROWS (dataset C) -- the quantity that actually drives the pull
+    volume / context cost -- NOT host count (a low-host account can still have thousands of
+    CVE rows; validated live: 13 hosts -> 663 rows). One cheap grouped call returns a small
+    result [(account, cve_row_count), ...] used by plan_chunks() to pick tenant/account/region.
+
+    by="region" also groups by EntityRegion (two group dimensions) so an oversized account can
+    be split by region without a second query; by="account" groups by account only.
+    """
+    q=build_cve_query()
+    je=next(j["id"] for j in q["joins"] if j["propertyIdentifier"]=="PackageVulnerabilityInstanceEntity")
     q["groupLevel"]=1
-    q["properties"]=[
-        {"identifier":"EntityTenant","queryId":qid,"groupLevel":1,"aggregation":None,
-         "sort":None,"startOfWeek":None,"transform":None},
-        {"identifier":"EntityTenant","queryId":qid,"groupLevel":0,"aggregation":"ValueCount",
-         "sort":{"direction":"Descending","ordinal":0},"startOfWeek":None,"transform":None},
-    ]
+    props=[{"identifier":"EntityTenant","queryId":je,"groupLevel":1,"aggregation":None,
+            "sort":None,"startOfWeek":None,"transform":None}]
+    if by=="region":
+        props.append({"identifier":"EntityRegion","queryId":je,"groupLevel":1,"aggregation":None,
+                      "sort":None,"startOfWeek":None,"transform":None})
+    props.append({"identifier":"EntityTenant","queryId":je,"groupLevel":0,"aggregation":"ValueCount",
+                  "sort":{"direction":"Descending","ordinal":0},"startOfWeek":None,"transform":None})
+    q["properties"]=props
     return q
 
+# Rows-per-run budget: the max qualifying CVE rows to pull in ONE model context/run. Each row
+# is a small object; ~4-6k rows is a conservative ceiling that leaves context headroom for the
+# query echo, tool schemas, and assembly reasoning. Tune per model/context window if needed.
+ROWS_PER_RUN = 4000
+
+def plan_chunks(account_sizes, region_sizes=None, budget=ROWS_PER_RUN):
+    """Deterministically choose the pull strategy from measured CVE-row counts.
+
+    account_sizes: {account_id: cve_row_count}   (from build_account_sizing_query(by="account"))
+    region_sizes:  {(account_id, region): count}  (optional; from by="region") -- used to split
+                   accounts that individually exceed the budget.
+    budget: max CVE rows per single run/context.
+
+    Returns a dict:
+      {"mode": "tenant"|"account"|"region",
+       "chunks": [ {"scope":"tenant"} ] | [ {"account":id}, ... ]
+                 | [ {"account":id}, {"account":id,"region":r}, ... ],
+       "oversized": [ list of scopes still over budget after region split -> caller must
+                      narrow further or accept truncation, and MUST surface this, never silent ] }
+
+    Rules (in order):
+      * total <= budget                      -> one tenant run (cheapest; no per-run overhead x N)
+      * every account <= budget              -> one run per account
+      * some account > budget                -> that account split by region; regions still
+                                                 over budget are reported as "oversized"
+    """
+    total=sum(account_sizes.values())
+    if total<=budget:
+        return {"mode":"tenant","chunks":[{"scope":"tenant"}],"oversized":[]}
+    big=[a for a,c in account_sizes.items() if c>budget]
+    if not big:
+        chunks=[{"account":a} for a,_ in sorted(account_sizes.items(),key=lambda kv:-kv[1])]
+        return {"mode":"account","chunks":chunks,"oversized":[]}
+    # at least one account is over budget -> region-split those; keep others whole
+    chunks=[]; oversized=[]
+    for a,c in sorted(account_sizes.items(),key=lambda kv:-kv[1]):
+        if c<=budget:
+            chunks.append({"account":a}); continue
+        if not region_sizes:
+            oversized.append({"account":a,"count":c,"why":"account over budget; no region_sizes provided to split"})
+            chunks.append({"account":a}); continue
+        for (ra,region),rc in sorted(((k,v) for k,v in region_sizes.items() if k[0]==a),key=lambda kv:-kv[1]):
+            chunks.append({"account":a,"region":region})
+            if rc>budget:
+                oversized.append({"account":a,"region":region,"count":rc,
+                                  "why":"region still over budget; narrow further (e.g. by severity window) or accept truncation"})
+    return {"mode":"region","chunks":chunks,"oversized":oversized}
+
 # --- reusable sub-builders so the WHOLE pipeline is generated from the spec ---------
-def _workload_rules(account=None):
+def _workload_rules(account=None, region=None):
     """Stage-1 workload rules (running + internet-direct + wide), incl. structural Stopped gate.
     If `account` is given, also scope to that tenant (EntityTenant In [account]) so the pull can
     be chunked per cloud account -- the key large-environment scaling lever for the MCP edition
-    (each account is pulled in its own run/context; results merge in assemble.py). One account
-    or a list of accounts is accepted."""
+    (each account is pulled in its own run/context; results merge in assemble.py). `region`
+    (EntityRegion In [region]) further sub-chunks an account too large to fit one context.
+    Each accepts a single value or a list."""
     out=[]
     for g in GATES:
         if g.stage!="1": continue
         out.append(_rule(g.field,("In" if g.op=="NotIn" else g.op),g.value,negate=(g.op=="NotIn")))
     if account:
-        vals=account if isinstance(account,list) else [account]
-        out.append(_rule("EntityTenant","In",vals))
+        out.append(_rule("EntityTenant","In",account if isinstance(account,list) else [account]))
+    if region:
+        out.append(_rule("EntityRegion","In",region if isinstance(region,list) else [region]))
     return out
 
 def _vuln_relation():
@@ -267,20 +325,20 @@ def _props(qid, idents):
     return [{"identifier":i,"queryId":qid,"groupLevel":0,"aggregation":None,"sort":None,
              "startOfWeek":None,"transform":None} for i in idents]
 
-def build_inventory_query(account=None):
+def build_inventory_query(account=None, region=None):
     """DATASET A -- one row per qualifying workload with tiering + identity fields.
     Root = IVirtualMachine (Stopped gate structurally in scope).
     `account` (optional): scope to one tenant for per-account chunked pulls."""
     validate_spec(); qid=assert_guid(hexguid())
     ep_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"NetworkDynamicAnalysisResourceNetworkEndpoints","ruleGroup":_group([],"And")}
-    root=_group(_workload_rules(account)+[ep_rel,_vuln_relation()],"And")
+    root=_group(_workload_rules(account, region)+[ep_rel,_vuln_relation()],"And")
     return {"typeName":"UdmQuery","objectTypeName":ROOT_OBJECT_TYPE,"groupLevel":0,"collapsed":False,
         "objectResultHidden":False,"timeZoneId":None,"id":qid,"joins":[],
         "properties":_props(qid,["EntityName","EntityTypeName","EntityTenant","VirtualMachineStatus",
             "EntityAttributes","OriginatorEntityServiceIdentities"]),"ruleGroup":root}
 
-def build_endpoints_query(account=None):
+def build_endpoints_query(account=None, region=None):
     """DATASET B -- validated listening endpoints (IP:port:protocol) for the qualifying population.
     Root = NetworkEndpoint, joined to the resource; population filter on the relation.
     `account` (optional): scope to one tenant for per-account chunked pulls.
@@ -291,7 +349,7 @@ def build_endpoints_query(account=None):
         "propertyIdentifier":"NetworkEndpointNetworkDynamicAnalysisResource","type":"Inner","joins":[],
         "ruleGroup":_group([],"And")}
     # population filter (minus Stopped, which isn't in scope on this relation target)
-    wl=[g for g in _workload_rules(account) if g["propertyIdentifier"]!="VirtualMachineStatus"]
+    wl=[g for g in _workload_rules(account, region) if g["propertyIdentifier"]!="VirtualMachineStatus"]
     res_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"NetworkEndpointNetworkDynamicAnalysisResource",
         "ruleGroup":_group(wl+[_vuln_relation()],"And")}
@@ -302,7 +360,7 @@ def build_endpoints_query(account=None):
         "objectResultHidden":False,"timeZoneId":None,"id":qid,"joins":[join],
         "properties":props,"ruleGroup":_group([res_rel],"And")}
 
-def build_cve_query(account=None):
+def build_cve_query(account=None, region=None):
     """DATASET C -- per-host qualifying CVEs (with scores) for the population.
     Root = PackageVulnerabilityInstanceModel; joins expose the CVE and host.
     `account` (optional): scope to one tenant for per-account chunked pulls.
@@ -315,7 +373,7 @@ def build_cve_query(account=None):
     vuln_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"PackageVulnerabilityInstanceVulnerability",
         "ruleGroup":_group([_group(structural,"And"),_group(evidence,"Or")],"And")}
-    wl=[g for g in _workload_rules(account) if g["propertyIdentifier"]!="VirtualMachineStatus"]
+    wl=[g for g in _workload_rules(account, region) if g["propertyIdentifier"]!="VirtualMachineStatus"]
     ent_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"PackageVulnerabilityInstanceEntity","ruleGroup":_group(wl,"And")}
     joinV={"typeName":"UdmQueryJoin","id":jv,"collapsed":False,"objectResultHidden":False,
@@ -463,13 +521,66 @@ def _selftests():
             f"{builder.__name__}: account scope not applied"
         assert "123456789012" in json.dumps(scoped["ruleGroup"])
         walk(scoped)  # scoped queries must still have valid GUIDs / no rejected signals
-    # sizing query is a valid grouped count over EntityTenant
+    # sizing query is a valid grouped CVE-row count (rooted on the vuln instance, not the VM)
     sz=build_account_sizing_query(); assert sz["groupLevel"]==1
+    assert sz["objectTypeName"]=="PackageVulnerabilityInstanceModel"   # counts CVE ROWS, not hosts
     assert any(p.get("aggregation")=="ValueCount" for p in sz["properties"])
+    assert "EntityRegion" in json.dumps(sz["properties"])              # by="region" default
+    assert "EntityRegion" not in json.dumps(build_account_sizing_query(by="account")["properties"])
+    # region scoping on the pull builders
+    rq=build_cve_query(account="a1",region="us-east-1")
+    assert "EntityRegion" in rule_fields(rq["ruleGroup"]) and "us-east-1" in json.dumps(rq["ruleGroup"])
+    assert "EntityRegion" not in rule_fields(build_cve_query(account="a1")["ruleGroup"])
+    # plan_chunks: deterministic tenant/account/region selection + loud oversized reporting
+    small={"a":10,"b":20}
+    assert plan_chunks(small,budget=100)["mode"]=="tenant"
+    mid={"a":300,"b":250}
+    assert plan_chunks(mid,budget=400)["mode"]=="account" and len(plan_chunks(mid,budget=400)["chunks"])==2
+    big={"a":900,"b":50}
+    p=plan_chunks(big,budget=400)                       # 'a' over budget, no region info
+    assert p["mode"]=="region" and p["oversized"] and p["oversized"][0]["account"]=="a"
+    p2=plan_chunks(big,region_sizes={("a","r1"):350,("a","r2"):350},budget=400)
+    assert p2["oversized"]==[]                            # region split resolves it
+    p3=plan_chunks(big,region_sizes={("a","r1"):900},budget=400)
+    assert p3["oversized"] and "narrow further" in p3["oversized"][0]["why"]  # still-too-big flagged
     print("ALL SELF-TESTS PASSED")
     return q
 
+def _cli_plan(argv):
+    """`python3 attack_path_spec.py plan <sizes.json> [budget]` -> deterministic chunk plan (JSON).
+
+    sizes.json: {"accounts": {"<id>": <cve_row_count>, ...},
+                 "regions": {"<id>|<region>": <count>, ...}   # optional, for oversized accounts
+                }  -- produced by running build_account_sizing_query() and tallying results.
+    Prints the plan_chunks() result as JSON for the shell driver to consume.
+    """
+    path=argv[0]; budget=int(argv[1]) if len(argv)>1 else ROWS_PER_RUN
+    data=json.load(open(path))
+    accounts={str(k):int(v) for k,v in (data.get("accounts") or {}).items()}
+    regions=None
+    if data.get("regions"):
+        regions={}
+        for k,v in data["regions"].items():
+            a,_,r=str(k).partition("|"); regions[(a,r)]=int(v)
+    plan=plan_chunks(accounts,region_sizes=regions,budget=budget)
+    plan["budget"]=budget; plan["total_rows"]=sum(accounts.values())
+    if "--tsv" in argv:
+        # machine-readable for shells: first line "MODE\t<mode>\t<oversized_count>",
+        # then one "<tag>\t<account>\t<region>" line per chunk (account/region empty for tenant).
+        import sys as _s
+        _s.stdout.write(f"MODE\t{plan['mode']}\t{len(plan['oversized'])}\n")
+        for c in plan["chunks"]:
+            a=c.get("account",""); r=c.get("region","")
+            tag = "tenant" if c.get("scope")=="tenant" else (f"{a}_{r}" if r else a)
+            _s.stdout.write(f"{tag}\t{a}\t{r}\n")
+        return plan
+    print(json.dumps(plan,indent=2))
+    return plan
+
 if __name__=="__main__":
+    import sys
+    if len(sys.argv)>1 and sys.argv[1]=="plan":
+        _cli_plan(sys.argv[2:]); sys.exit(0)
     q=_selftests()
     print("\n--- gate order ---")
     for g in GATES:
