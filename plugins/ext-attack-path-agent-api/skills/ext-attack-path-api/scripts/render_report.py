@@ -163,6 +163,13 @@ paths=[]; review=[]; excluded=[]
 for _raw in data["C"]:
     m=_norm_cve(_raw); iid=m["instance_id"]; host=A.get(iid)
     vp = PORTS.get(iid) or NAMEPORTS.get(m["name"]) or set()
+    # Gate 4 (full-fidelity MCP only): a finding qualifies -- keep OR review -- only if its host
+    # has an OBSERVED listening endpoint. A host with no validated endpoint failed gate 4 and must
+    # not leak into either bucket (esp. 'review', where an unmapped component would otherwise
+    # surface a non-exposed host as if it were exposed). In REDUCED mode there are no endpoints by
+    # definition, so this gate is not applied (the reduced banner already states that limitation).
+    if not REDUCED and not vp:
+        excluded.append({**m,"reason":"no observed listening endpoint on host (fails gate 4: exposure)"}); continue
     status,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
     if status=="drop":
         excluded.append({**m,"reason":reason}); continue

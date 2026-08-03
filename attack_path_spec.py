@@ -373,7 +373,16 @@ def _workload_rules(account=None, region=None):
         if g.stage!="1": continue
         out.append(_rule(g.field,("In" if g.op=="NotIn" else g.op),g.value,negate=(g.op=="NotIn")))
     if account:
-        out.append(_rule("EntityTenant","In",account if isinstance(account,list) else [account]))
+        # EntityTenant is a CommonId (relation to ITenantEntity); CommonId does NOT accept `In`,
+        # so scope via a relation rule on the tenant entity. Filter on the tenant's `Id` (the UDM
+        # system id) -- NOT EntityProviderRawId. `Id` equals the EntityTenant value carried on
+        # data rows across ALL providers; EntityProviderRawId only coincides with it for AWS
+        # (for GCP/Azure/OCI the provider-native id differs from Id, so filtering on it silently
+        # returns zero -- a per-account false-negative at scale).
+        accts=account if isinstance(account,list) else [account]
+        acct_rules=[_rule("Id","In",accts)] if len(accts)>1 else [_rule("Id","Equals",[accts[0]])]
+        out.append({"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,
+                    "not":False,"relationPropertyIdentifier":"EntityTenant","ruleGroup":_group(acct_rules,"And")})
     if region:
         out.append(_rule("EntityRegion","In",region if isinstance(region,list) else [region]))
     return out
@@ -421,7 +430,7 @@ def build_endpoints_query(account=None, region=None):
         "propertyIdentifier":"NetworkEndpointNetworkDynamicAnalysisResource","type":"Inner","joins":[],
         "ruleGroup":_group([],"And")}
     # population filter (minus Stopped, which isn't in scope on this relation target)
-    wl=[g for g in _workload_rules(account, region) if g["propertyIdentifier"]!="VirtualMachineStatus"]
+    wl=[g for g in _workload_rules(account, region) if g.get("propertyIdentifier")!="VirtualMachineStatus"]
     res_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"NetworkEndpointNetworkDynamicAnalysisResource",
         "ruleGroup":_group(wl+[_vuln_relation()],"And")}
@@ -445,7 +454,7 @@ def build_cve_query(account=None, region=None):
     vuln_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"PackageVulnerabilityInstanceVulnerability",
         "ruleGroup":_group([_group(structural,"And"),_group(evidence,"Or")],"And")}
-    wl=[g for g in _workload_rules(account, region) if g["propertyIdentifier"]!="VirtualMachineStatus"]
+    wl=[g for g in _workload_rules(account, region) if g.get("propertyIdentifier")!="VirtualMachineStatus"]
     ent_rel={"typeName":"UdmQueryRelationRule","id":assert_guid(hexguid()),"ignored":False,"not":False,
         "relationPropertyIdentifier":"PackageVulnerabilityInstanceEntity","ruleGroup":_group(wl,"And")}
     joinV={"typeName":"UdmQueryJoin","id":jv,"collapsed":False,"objectResultHidden":False,
@@ -742,14 +751,28 @@ def _selftests():
     # endpoint query must NOT carry a Stopped rule (not in scope there) but inventory MUST
     assert "VirtualMachineStatus" in json.dumps(build_inventory_query())
     assert "VirtualMachineStatus" not in json.dumps(build_endpoints_query()["ruleGroup"])
-    # per-account chunk scoping: EntityTenant rule present iff account passed, on all 3 builders
+    # per-account chunk scoping: EntityTenant is a CommonId (relation to ITenantEntity) and does
+    # NOT accept `In`, so account scope is applied as a relation rule on EntityTenant filtering
+    # EntityProviderRawId (the provider-native account id). Verify: no scope leaks into an
+    # unscoped query, and a scoped query carries the tenant relation + provider-id rule + value.
     for builder in (build_inventory_query, build_endpoints_query, build_cve_query):
-        assert "EntityTenant" not in rule_fields(builder()["ruleGroup"]), \
-            f"{builder.__name__}: EntityTenant leaked into unscoped query"
+        unscoped=json.dumps(builder()["ruleGroup"])
+        assert "EntityTenant" not in unscoped, \
+            f"{builder.__name__}: account scope leaked into unscoped query"
         scoped=builder(account="123456789012")
-        assert "EntityTenant" in rule_fields(scoped["ruleGroup"]), \
-            f"{builder.__name__}: account scope not applied"
-        assert "123456789012" in json.dumps(scoped["ruleGroup"])
+        sj=json.dumps(scoped["ruleGroup"])
+        assert '"relationPropertyIdentifier": "EntityTenant"' in sj, \
+            f"{builder.__name__}: account scope not applied via EntityTenant relation"
+        # scope must filter the tenant's Id (cross-provider), NOT EntityProviderRawId (AWS-only,
+        # silently zero for GCP/Azure/OCI). The Id rule lives inside the EntityTenant relation.
+        assert '"propertyIdentifier": "Id"' in sj, \
+            f"{builder.__name__}: account scope missing tenant Id rule"
+        assert "EntityProviderRawId" not in sj, \
+            f"{builder.__name__}: scope uses EntityProviderRawId (AWS-only false-negative for other clouds)"
+        # never the invalid `In` on the EntityTenant CommonId directly
+        assert '"propertyIdentifier": "EntityTenant"' not in sj, \
+            f"{builder.__name__}: EntityTenant used as a plain rule (invalid: CommonId rejects operators)"
+        assert "123456789012" in sj
         walk(scoped)  # scoped queries must still have valid GUIDs / no rejected signals
     # sizing query is a valid grouped CVE-row count (rooted on the vuln instance, not the VM)
     sz=build_account_sizing_query(); assert sz["groupLevel"]==1

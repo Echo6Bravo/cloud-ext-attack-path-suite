@@ -35,6 +35,27 @@ echo "== 4. render (reduced / --no-endpoint mode) =="
 python3 render_report.py --data ./data/sample --no-endpoint --out /tmp/_r2.html >/dev/null 2>&1 \
   && grep -q "Reduced-fidelity report" /tmp/_r2.html && ok "--no-endpoint render (reduced banner present)" || bad "--no-endpoint render"
 
+echo "== 4b. gate-4 endpoint requirement: a host with NO validated endpoint never leaks into keep/review =="
+# Regression for the live-lab bug: CVE rows whose host has no observed listening endpoint must be
+# DROPPED (failed gate 4), not surfaced for review. Two hosts w/ the same unmapped component; only
+# one has an endpoint. The no-endpoint host must not appear anywhere in the MCP report.
+G4=$(python3 - <<'PY'
+import json,subprocess,tempfile,os,sys
+d=tempfile.mkdtemp()
+A=[{"instance_id":"h-exposed","name":"exposed","type":"AwsEc2Instance","tenant":"t","status":"Running","privileged":False,"identity_ids":[]},
+   {"instance_id":"h-noendpoint","name":"noendpoint","type":"AwsEc2Instance","tenant":"t","status":"Running","privileged":False,"identity_ids":[]}]
+B=[{"instance_id":"h-exposed","name":"exposed","ports":[{"port":6379,"protocol":"TCP"}]}]
+mk=lambda iid,nm,cve:{"instance_id":iid,"name":nm,"type":"AwsEc2Instance","cve":cve,"component":"somelib","cvss":9.8,"epss":0.9,"kev":False,"severity":"High","poc":True,"gate_reason":"epss","status":"Open"}
+C=[mk("h-exposed","exposed","CVE-2025-0001"),mk("h-noendpoint","noendpoint","CVE-2025-0002")]
+json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
+out=os.path.join(d,"r.html")
+subprocess.run([sys.executable,"render_report.py","--data",d,"--out",out],capture_output=True,text=True)
+html=open(out).read()
+print("Y" if ("noendpoint" not in html and "exposed" in html) else "N")
+PY
+)
+[ "$G4" = "Y" ] && ok "gate-4: no-endpoint host excluded from keep/review" || bad "gate-4 endpoint requirement leak (got '$G4')"
+
 echo "== 5. GraphQL caller HTTP handling (local mock; proves portability w/o a token) =="
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   CALLER="plugins/ext-attack-path-agent-api/skills/ext-attack-path-api/scripts/tcs_graphql.sh"
