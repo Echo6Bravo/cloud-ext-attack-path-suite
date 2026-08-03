@@ -29,7 +29,7 @@ query result.**
 
 - `bash`, `curl`, and `jq`.
 - **Python 3.8+** (standard library only) for the bundled spec + renderer under
-  `../../scripts/` (`attack_path_spec.py`, `render_report.py`).
+  `scripts/` (`attack_path_spec.py`, `render_report.py`).
 - Environment variables:
   - `TENABLE_CS_API_URL` — GraphQL endpoint (commercial default
     `https://app.tenable.com/api/graph`; confirm your region/platform in the console).
@@ -40,8 +40,8 @@ query result.**
 
 ## The MCP contract vs. what the GraphQL API can enforce
 
-`../../scripts/attack_path_spec.py` remains the single source of truth for the **full**
-contract (run `python3 ../../scripts/attack_path_spec.py`; it must print
+`scripts/attack_path_spec.py` remains the single source of truth for the **full**
+contract (run `python3 scripts/attack_path_spec.py`; it must print
 `ALL SELF-TESTS PASSED`). This edition maps each gate to the GraphQL API as follows —
 **verified live**, not assumed:
 
@@ -67,7 +67,7 @@ the gates it *can* enforce to compensate.
 ## Workflow
 
 ### 1. Verify the shared spec
-Run `python3 ../../scripts/attack_path_spec.py`; confirm `ALL SELF-TESTS PASSED`. (It
+Run `python3 scripts/attack_path_spec.py`; confirm `ALL SELF-TESTS PASSED`. (It
 documents the full contract this edition is a subset of.)
 
 ### 2. Confirm connectivity and (optionally) re-introspect
@@ -111,7 +111,7 @@ the first page.
 — **B** is intentionally empty (no observed endpoint; gate 4 dropped) and each C row's
 `component` comes from `Software.Name`. Then render:
 ```bash
-python3 ../../scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
+python3 scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
     --no-endpoint --out ./output/attack-paths-report-api.html
 ```
 `--no-endpoint` puts the renderer in **reduced mode**: because dataset B is empty, gate 8
@@ -121,6 +121,13 @@ the report is bannered as reduced-fidelity (candidates, port not confirmed). The
 also auto-enables this when B is empty, but pass the flag explicitly. Without it the full
 gate 8 would reject **every** row (no observed ports → nothing correlates). The same
 `--max-cards` / `--max-cves-per-host` scale caps apply (see MCP SKILL.md).
+
+> **Scale (stress-tested).** `assemble_api.py` streams pages, so it handles very large pulls
+> cheaply (measured: 300k raw rows / 302 pages → 1.5 s, ~113 MB). `render_report.py` holds the
+> surviving rows in memory (measured: ~111k rows → ~286 MB, 2.5 MB capped HTML vs 28 MB
+> uncapped), so the `--max-cards`/`--max-cves-per-host` caps are what keep the HTML openable.
+> If a single scope yields *millions* of surviving rows, bound the set before rendering with
+> `assemble_api.py --max-hosts N` (keeps the N hosts with the most qualifying CVEs).
 
 ### 6. Deliver — and STATE THE FIDELITY GAP
 Present the report path and a 2–3 sentence summary. **Every API-edition report must

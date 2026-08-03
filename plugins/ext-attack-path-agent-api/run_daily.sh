@@ -1,44 +1,38 @@
 #!/usr/bin/env bash
-# Headless daily driver for the External Attack-Path Agent (API-token edition).
+# Headless daily driver for the External Attack-Path Agent (API-token edition, reduced fidelity).
 #
-# This is a THIN scheduling wrapper. It verifies the detection spec and prepares the
-# working directory; the actual data pull (GraphQL introspection + the three dataset
-# queries) is performed by an agent following skills/ext-attack-path-api/SKILL.md, which
-# writes assembled.json into $DATA_DIR. If assembled.json is already present (e.g. a
-# prior agent step wrote it), this script renders straight away.
+# Full unattended pipeline (no model context needed): pull -> assemble -> render.
+#   1. scripts/fetch_all.sh      cursor-paginate the GraphQL API -> data/raw/gql_*.json
+#   2. scripts/assemble_api.py   reduced gates -> assembled.json (B empty; component=Software.Name)
+#   3. scripts/render_report.py  --no-endpoint reduced-mode HTML report
 #
 # Required env: TENABLE_CS_API_URL, TENABLE_CS_API_TOKEN
-# Optional env: DATA_DIR (default ./data), OUT_DIR (default ./output)
+# Optional env: DATA_DIR (default ./data), OUT_DIR (default ./output), PAGE, IDS_PER_BATCH,
+#               MAX_CARDS (default 150), MAX_CVES (default 25)
 set -euo pipefail
 
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SKILL_DIR/../.." && pwd)"
-DATA_DIR="${DATA_DIR:-$REPO_ROOT/data}"
-OUT_DIR="${OUT_DIR:-$REPO_ROOT/output}"
-# Use a fixed, sortable date; GNU/BSD date both support +%F.
+# All executable pieces live together in the skill's scripts/ dir (bundled by build.sh).
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS="$PLUGIN_DIR/skills/ext-attack-path-api/scripts"
+DATA_DIR="${DATA_DIR:-./data}"
+OUT_DIR="${OUT_DIR:-./output}"
 TODAY="$(date +%F)"
 
 : "${TENABLE_CS_API_URL:?set TENABLE_CS_API_URL}"
 : "${TENABLE_CS_API_TOKEN:?set TENABLE_CS_API_TOKEN}"
-
 mkdir -p "$DATA_DIR" "$OUT_DIR"
 
 echo "[$(date +%FT%T)] verifying detection spec..."
-python3 "$REPO_ROOT/attack_path_spec.py" >/dev/null
-echo "  spec self-tests passed"
+python3 "$SCRIPTS/attack_path_spec.py" >/dev/null && echo "  spec self-tests passed"
 
-if [ ! -f "$DATA_DIR/assembled.json" ]; then
-  cat >&2 <<EOF
-[$(date +%FT%T)] no $DATA_DIR/assembled.json found.
-This wrapper does not itself call the GraphQL API — run the agent skill
-(skills/ext-attack-path-api/SKILL.md) to introspect the schema, pull datasets A/B/C,
-and write assembled.json to $DATA_DIR. Then re-run this script (or schedule the agent
-step ahead of it). Exiting without a report.
-EOF
-  exit 2
-fi
+echo "[$(date +%FT%T)] 1/3 pulling data (headless, cursor-paginated)..."
+RAW_DIR="$DATA_DIR/raw" bash "$SCRIPTS/fetch_all.sh"
 
-OUT="$OUT_DIR/attack-paths-report-$TODAY.html"
-echo "[$(date +%FT%T)] rendering $OUT ..."
-python3 "$REPO_ROOT/render_report.py" --data "$DATA_DIR" --date "$TODAY" --out "$OUT"
-echo "[$(date +%FT%T)] done -> $OUT"
+echo "[$(date +%FT%T)] 2/3 assembling (reduced-fidelity gates)..."
+python3 "$SCRIPTS/assemble_api.py" --raw "$DATA_DIR/raw" --out "$DATA_DIR/assembled.json"
+
+OUT="$OUT_DIR/attack-paths-report-api-$TODAY.html"
+echo "[$(date +%FT%T)] 3/3 rendering $OUT ..."
+python3 "$SCRIPTS/render_report.py" --data "$DATA_DIR" --date "$TODAY" --no-endpoint \
+  --max-cards "${MAX_CARDS:-150}" --max-cves-per-host "${MAX_CVES:-25}" --out "$OUT"
+echo "[$(date +%FT%T)] done -> $OUT  (reduced-fidelity; see report banner)"
