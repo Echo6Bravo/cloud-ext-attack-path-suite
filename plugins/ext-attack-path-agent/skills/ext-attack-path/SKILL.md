@@ -190,8 +190,28 @@ repo `.gitignore`).
 > flows*. Context compaction won't save it either — it would summarize away the raw rows
 > needed to assemble the report. Route by the **count** queries (step 3):
 > - **Small tenant** (C ≲ ~1,000 rows): schedule this MCP skill directly.
-> - **Large tenant**: for unattended/daily use, deploy the **API-token edition**
->   (`ext-attack-path-agent-api`), whose `fetch_all.sh` paginates in a pure shell with
->   **zero model context** (scales to any size) — or keep the MCP skill but schedule it
->   **per-account/region** (add an `EntityTenant`/`EntityRegion` rule) so each run stays
->   small, and merge the reports. Note the API edition is reduced-fidelity (see its README).
+> - **Large tenant**: **chunk by cloud account** to keep full MCP fidelity (preferred), or
+>   fall back to the reduced-fidelity API edition. See "Chunked pull" below.
+
+### Chunked pull by cloud account (large tenants, full fidelity)
+The MCP limit is on volume pulled through the model **per run/context** — not on total
+work. So pull **one account per run** (each a fresh context) and merge:
+
+1. **Size it.** Run `attack_path_spec.build_account_sizing_query()` once (a cheap grouped
+   `ValueCount` over `EntityTenant`; validated live). It returns `[(account, host_count), …]`
+   — a small result — so you learn the accounts and their sizes without pulling raw rows.
+2. **Route.** For each account, run `udm_get_query_results_count` on
+   `build_cve_query(account=<id>)`. If an account's own CVE count is still too large for one
+   context, **sub-chunk it by region** (or fail loud) — never silently truncate.
+3. **Pull per account, scoped.** The `build_*` functions take `account=<id>` and inject an
+   `EntityTenant` rule, so each run pulls only that account. Save each raw page to a shared
+   `data/raw/` with an account-tagged name (`raw_A_<acct>_p<N>.json`, etc.).
+4. **Merge + render once.** `assemble.py` globs all `raw_*` pages and dedupes hosts by
+   `instance_id`, so one `assemble.py` + `render_report.py` produces a single merged report
+   across every account (proven end-to-end).
+
+`scripts/run_chunked.sh` automates this (sizing → one headless `claude -p` per account →
+merge). **Scope note:** this scales to the size of the **largest single account** (which
+must still fit one context), not the whole estate — "much more scalable, not unbounded." For
+truly unbounded headless scale, the API edition's shell pull is the only option (reduced
+fidelity).
