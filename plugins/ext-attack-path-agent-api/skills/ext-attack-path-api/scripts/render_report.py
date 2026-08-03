@@ -39,28 +39,97 @@ ap.add_argument("--no-endpoint",action="store_true",
 args=ap.parse_args()
 
 DATE=args.date
-data=json.load(open(os.path.join(args.data,"assembled.json")))
-# endpoint IP:port map (optional enrichment)
+
+def _die(msg, code=2):
+    """Emit a clear, actionable error to stderr and exit -- never a raw traceback.
+    A headless/cron run needs a diagnosable message, not a Python stack dump."""
+    sys.stderr.write(f"render_report: ERROR: {msg}\n")
+    sys.exit(code)
+
+def _load_json(path, what):
+    if not os.path.exists(path):
+        _die(f"{what} not found: {path}")
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except json.JSONDecodeError as e:
+        _die(f"{what} is not valid JSON ({path}): {e} "
+             f"-- a truncated/interrupted pull can cause this; re-run the data pull.")
+    except OSError as e:
+        _die(f"cannot read {what} ({path}): {e}")
+
+# --- load + validate structure up front (clear errors, not tracebacks) ---
+data=_load_json(os.path.join(args.data,"assembled.json"), "assembled.json")
+if not isinstance(data, dict):
+    _die('assembled.json must be a JSON object with keys "A","B","C".')
+for k in ("A","B","C"):
+    if k not in data:
+        _die(f'assembled.json is missing required key "{k}" '
+             f'(expected {{"A":[inventory],"B":[endpoints],"C":[cve rows]}}).')
+    if not isinstance(data[k], list):
+        _die(f'assembled.json key "{k}" must be a list, got {type(data[k]).__name__}.')
+
+def _rows(key):
+    """Yield only well-formed dict rows from a dataset, skipping (and counting) junk so one
+    malformed row can't crash the whole render."""
+    skipped=0; good=[]
+    for r in data[key]:
+        if isinstance(r, dict): good.append(r)
+        else: skipped+=1
+    if skipped:
+        sys.stderr.write(f"render_report: WARNING: skipped {skipped} non-object row(s) in dataset {key}.\n")
+    return good
+
+data["A"]=_rows("A"); data["B"]=_rows("B"); data["C"]=_rows("C")
+
+# endpoint IP:port map (optional enrichment) -- tolerate a missing/malformed file
 EPIP={}
 _ipf=os.path.join(args.data,"endpoint_ips.json")
 if os.path.exists(_ipf):
-    for e in json.load(open(_ipf))["endpoints"]:
-        EPIP.setdefault(e["name"],{})[e["port"]]=e["ip"]
+    _ips=_load_json(_ipf,"endpoint_ips.json")
+    for e in (_ips.get("endpoints") if isinstance(_ips,dict) else None) or []:
+        if isinstance(e,dict) and e.get("name") is not None and e.get("port") is not None:
+            EPIP.setdefault(e["name"],{})[e["port"]]=e.get("ip")
 def ip_for(name,port):
     return EPIP.get(name,{}).get(port)
-A={h["instance_id"]:h for h in data["A"]}
-PORTS={h["instance_id"]:{p["port"] for p in h["ports"]} for h in data["B"]}
+
+# Build lookups defensively: rows may be missing instance_id/ports/name.
+A={h["instance_id"]:h for h in data["A"] if h.get("instance_id") is not None}
+def _ports_of(h):
+    out=set()
+    for p in (h.get("ports") or []):
+        if isinstance(p,dict) and p.get("port") is not None: out.add(p["port"])
+    return out
+PORTS={h["instance_id"]:_ports_of(h) for h in data["B"] if h.get("instance_id") is not None}
 NAMEPORTS={}
-for h in data["B"]: NAMEPORTS.setdefault(h["name"],set()).update(p["port"] for p in h["ports"])
+for h in data["B"]:
+    if h.get("name") is not None: NAMEPORTS.setdefault(h["name"],set()).update(_ports_of(h))
 
 # ---- apply spec post-filter (Stage 3.4 component<->port + Stopped safety net) ----
 # Reduced mode: explicit --no-endpoint, or auto when the endpoint dataset B is empty
 # (the API/GraphQL edition has no observed listeners). Gate 8 then degrades to the
 # listening-component test only, and the report is bannered as reduced-fidelity.
 REDUCED = args.no_endpoint or (len(data["B"])==0 and len(data["C"])>0)
+
+def _norm_cve(m):
+    """Normalize a raw C row to safe, correctly-typed defaults so a missing/null field can
+    never crash the render. Returns a NEW dict (originals may be missing any key)."""
+    def num(v):
+        try: return float(v) if v is not None else 0.0
+        except (TypeError,ValueError): return 0.0
+    return {**m,
+        "instance_id": m.get("instance_id"),
+        "name": m.get("name") if m.get("name") is not None else "(unknown)",
+        "component": (m.get("component") or ""),
+        "cve": m.get("cve") if m.get("cve") is not None else "(no CVE id)",
+        "epss": num(m.get("epss")), "cvss": num(m.get("cvss")),
+        "kev": bool(m.get("kev")),
+        "severity": m.get("severity") if m.get("severity") is not None else "",
+        "status": m.get("status") if m.get("status") is not None else "Open"}
+
 paths=[]; review=[]; excluded=[]
-for m in data["C"]:
-    iid=m["instance_id"]; host=A.get(iid)
+for _raw in data["C"]:
+    m=_norm_cve(_raw); iid=m["instance_id"]; host=A.get(iid)
     vp = PORTS.get(iid) or NAMEPORTS.get(m["name"]) or set()
     status,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
     if status=="drop":
@@ -68,10 +137,10 @@ for m in data["C"]:
     sk=spec.service_key(m["component"]); need=spec.SERVICE_PORTS.get(sk,set())
     port=sorted(vp & need)[0] if (vp & need) else None
     row={**m,"port":port,"service":sk,"pf_status":status,"pf_reason":reason,
-         "privileged": host["privileged"] if host else False,
-         "type": host["type"] if host else m.get("type"),
-         "tenant": host["tenant"] if host else "",
-         "identity_ids": host["identity_ids"] if host else []}
+         "privileged": bool(host.get("privileged")) if host else False,
+         "type": host.get("type") if host else m.get("type"),
+         "tenant": (host.get("tenant") if host else None) or "",
+         "identity_ids": [i for i in (host.get("identity_ids") or []) if i] if host else []}
     # 'review' = unmapped-but-exposed vulnerable component (anti-false-negative): surface it
     # in a separate bucket rather than either confirming it as a path or silently dropping it.
     (paths if status=="keep" else review).append(row)
@@ -107,15 +176,19 @@ tier1=[h for h in hostlist if h["privileged"]]
 tier2=[h for h in hostlist if not h["privileged"]]
 
 # accounts in scope (from full 114 inventory, not just live-path hosts)
-accts=sorted({h["tenant"] for h in data["A"]})
+# tenant may be null/missing on a malformed row -> coerce to a visible placeholder, never None.
+def _tenant(h):
+    t=h.get("tenant"); return t if t else "(unknown account)"
+accts=sorted({_tenant(h) for h in data["A"]})
 # Derive provider from the host EntityTypeName (ground truth) rather than guessing from the
 # tenant-id format -- 12-digit strings are ambiguous between AWS accounts and GCP projects.
 TYPE_PROVIDER={"AwsEc2Instance":"AWS","GcpComputeInstance":"GCP","AzureComputeVirtualMachine":"Azure"}
 _ACCT_PROV={}
 for h in data["A"]:
-    prov=TYPE_PROVIDER.get(h["type"])
-    if prov: _ACCT_PROV.setdefault(h["tenant"],prov)
+    prov=TYPE_PROVIDER.get(h.get("type"))
+    if prov: _ACCT_PROV.setdefault(_tenant(h),prov)
 def provider_of(a):
+    a=a or ""
     if a in _ACCT_PROV: return _ACCT_PROV[a]
     if "-" in a: return "Azure"          # GUID subscription fallback
     return "Other"

@@ -104,6 +104,45 @@ if bad:
     sys.exit(1)
 PY
 
+echo "== 8. robustness: messy/malformed data fails cleanly (no traceback), exit contract =="
+python3 - <<'PY' && ok "messy-data handling (clean errors + defensive rows)" || bad "messy-data handling"
+import json,os,subprocess,sys,tempfile
+d=tempfile.mkdtemp(); PY=sys.executable
+def run(payload, fname="assembled.json", write=True):
+    sub=tempfile.mkdtemp()
+    if write: open(os.path.join(sub,fname),"w").write(payload)
+    r=subprocess.run([PY,"render_report.py","--data",sub,"--out",os.path.join(sub,"r.html")],
+                     capture_output=True,text=True)
+    return r.returncode, (r.stderr or "")
+fails=[]
+# input errors -> exit 2, a clean 'render_report: ERROR' message, and NO python traceback
+for name,payload in [
+    ("missing-key",'{"A":[],"B":[]}'),
+    ("bad-json",'{"A":[],"B":[],"C":[{'),
+    ("wrong-type",'{"A":[],"B":[],"C":{}}'),
+    ("not-object",'[]'),
+]:
+    rc,err=run(payload)
+    if rc!=2: fails.append((name,f"exit {rc}, want 2"))
+    if "Traceback" in err: fails.append((name,"leaked a Python traceback"))
+    if "render_report: ERROR" not in err: fails.append((name,"no clean ERROR message"))
+# missing dir -> exit 2, clean
+rc,err=run("",write=False)
+if rc!=2 or "Traceback" in err: fails.append(("missing-dir",f"exit {rc}"))
+# empty datasets -> success (exit 0)
+rc,err=run('{"A":[],"B":[],"C":[]}')
+if rc!=0: fails.append(("empty",f"exit {rc}, want 0"))
+# null/missing per-row fields -> success (exit 0), not a crash
+messy=json.dumps({"A":[{"instance_id":"i-1","name":None,"type":"AwsEc2Instance","tenant":None,"identity_ids":None}],
+ "B":[{"instance_id":"i-1","name":"x","ports":[{"port":443,"protocol":"HTTPS"}]}],
+ "C":[{"instance_id":"i-1","name":"x","cve":None,"epss":None,"cvss":None,"kev":None,"severity":None,"status":"Open"}]})
+rc,err=run(messy)
+if rc!=0: fails.append(("null-fields",f"exit {rc}, want 0; {err[:80]}"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
 echo ""
 [ $FAIL -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit $FAIL

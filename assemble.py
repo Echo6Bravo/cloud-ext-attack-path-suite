@@ -29,10 +29,30 @@ import attack_path_spec as spec
 SEVERE = spec.PRIVILEGE_ATTR  # "SeverePermissionActionPrincipalAttribute"
 
 
+import sys
+
+def _load_pages(raw_dir, prefix):
+    """Yield parsed page dicts for raw_<prefix>_*.json, skipping unreadable/malformed pages
+    with a warning rather than aborting the whole assembly (a single corrupt page in a large
+    multi-account pull must not lose everything). Returns nothing if the dir/pattern is empty."""
+    for f in sorted(glob.glob(os.path.join(raw_dir, prefix + "*.json"))):
+        try:
+            with open(f) as fh:
+                page = json.load(fh)
+        except (json.JSONDecodeError, OSError) as e:
+            sys.stderr.write(f"assemble: WARNING: skipping unreadable/malformed page {f}: {e}\n")
+            continue
+        if not isinstance(page, dict):
+            sys.stderr.write(f"assemble: WARNING: skipping page {f}: top-level is not a JSON object\n")
+            continue
+        yield page
+
+
 def _rows(page):
     """Yield each result's queryId->object map from one raw response."""
-    for r in page.get("resultsList", []):
-        yield r.get("queryIdToObjectMap", {})
+    for r in (page.get("resultsList") or []):
+        if isinstance(r, dict):
+            yield r.get("queryIdToObjectMap", {})
 
 
 def _vmap(obj_for_query):
@@ -49,9 +69,7 @@ def _first_map(qmap):
 def load_inventory(raw_dir):
     """A rows: one per host. instance_id = resource Id; privileged from EntityAttributes."""
     A = {}
-    for f in sorted(glob.glob(os.path.join(raw_dir, "raw_A_*.json"))):
-        with open(f) as fh:
-            page = json.load(fh)
+    for page in _load_pages(raw_dir, "raw_A_"):
         for qmap in _rows(page):
             maps = _first_map(qmap)
             # inventory is single-query; take the map that has an Id + EntityName
@@ -78,9 +96,7 @@ def load_endpoints(raw_dir):
     ports_by_iid = {}     # iid -> set((port, proto))
     name_by_iid = {}
     ips = []              # {name, ip, port, protocol}
-    for f in sorted(glob.glob(os.path.join(raw_dir, "raw_B_*.json"))):
-        with open(f) as fh:
-            page = json.load(fh)
+    for page in _load_pages(raw_dir, "raw_B_"):
         for qmap in _rows(page):
             maps = _first_map(qmap)
             ep = next((v for v in maps.values() if "NetworkEndpointPort" in v), None)
@@ -117,9 +133,7 @@ def _gate_reason(epss, kev):
 def load_cves(raw_dir):
     """C rows: one per (host, cve). component = 2nd path segment of the instance Id."""
     C = []
-    for f in sorted(glob.glob(os.path.join(raw_dir, "raw_C_*.json"))):
-        with open(f) as fh:
-            page = json.load(fh)
+    for page in _load_pages(raw_dir, "raw_C_"):
         for qmap in _rows(page):
             maps = _first_map(qmap)
             inst = next((v for v in maps.values() if "PackageVulnerabilityInstanceStatus" in v), None)
