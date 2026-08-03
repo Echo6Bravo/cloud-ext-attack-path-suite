@@ -563,10 +563,17 @@ def review_table(rows):
          f'service (or, in reduced mode, whose port could not be observed). They are <b>not</b> confirmed '
          f'attack paths and <b>not</b> dismissed &mdash; triage each: if the component is an internet-facing '
          f'service, add it to <code>SERVICE_PORTS</code> and it will promote to a full finding next run.</div></div>',
-         '<table class="vt"><tr><th>Workload</th><th>Account</th><th>Component</th><th>CVE</th><th>EPSS</th><th>KEV</th><th>Why review</th></tr>']
+         '<table class="vt"><tr><th>Workload</th><th>Account</th><th>Exposed endpoint(s) (IP:port)</th><th>Component</th><th>CVE</th><th>EPSS</th><th>KEV</th><th>Why review</th></tr>']
     for r in uniq:
+        # Show the host's observed listening endpoint(s) so a customer can locate the source.
+        # These rows ARE on internet-exposed hosts (gate 4 passed); the component just wasn't
+        # auto-mapped to a service. List every validated IP:port on the host (the vulnerable
+        # listener is among them), matching the keep-table's endpoint column.
+        vports = sorted(PORTS.get(r.get("instance_id")) or NAMEPORTS.get(r["name"]) or [])
+        eps = ", ".join(f'{ip_for(r["name"],p)}:{p}' if ip_for(r["name"],p) else f'(port {p})' for p in vports) or "—"
         out.append(f'<tr><td>{esc(r["name"])}</td>'
           f'<td class="ipport">{esc(acct_kind(r["tenant"]))} {esc(r["tenant"])}</td>'
+          f'<td class="ipport">{esc(eps)}</td>'
           f'<td>{esc(r.get("component") or "?")}</td>'
           f'<td class="cve"><a href="https://nvd.nist.gov/vuln/detail/{esc(r["cve"])}" target="_blank" rel="noopener noreferrer">{esc(r["cve"])}</a></td>'
           f'<td class="num">{r.get("epss",0)*100:.0f}%</td><td>{"yes" if r.get("kev") else "—"}</td>'
