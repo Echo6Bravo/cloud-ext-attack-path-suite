@@ -238,11 +238,30 @@ pull** and the **output size**, both addressed:
   render would exceed **1 GB** (unopenable). `assemble.py --max-hosts N` bounds the set
   earlier still.
 
-## Requirements
+## Requirements & runtime dependencies
 
-- **Python 3.8+** (standard library only — no third-party packages).
-- Access to a **Tenable Cloud Security** tenant and the **UDM / Explore query API**
-  (e.g. via the Tenable MCP `udm_execute_query` tool) to pull the three datasets.
+**Shared (both editions)**
+- **Python 3.7+**, standard library only — no third-party packages (`json`, `re`, `uuid`,
+  `argparse`, `html`, `os`, `glob`, `datetime`). Type hints are guarded by
+  `from __future__ import annotations`, so no PEP 585 runtime-generics issue on 3.7–3.8.
+  Invoked as `python3`. Tested on 3.14; floor verified by feature audit (only f-strings).
+- Access to a **Tenable Cloud Security** tenant.
+
+**MCP edition** (`ext-attack-path-agent`)
+- The **`tcs` MCP connector** (UDM / Explore `udm_execute_query`). No shell tooling beyond
+  Python is required for the core; the optional `run_chunked.sh` driver needs **bash 3.2+**
+  and the **`claude` CLI** (for headless per-account runs).
+
+**API-token edition** (`ext-attack-path-agent-api`)
+- **bash 3.2+** (macOS default; no bash-4 features used), **curl**, **jq 1.5+**.
+- Portable by design: no GNU-only flags, no `curl --fail-with-body` (which needs curl
+  7.76+); HTTP errors are checked via `-w` so it works on RHEL7/8-era curl. `date`, `seq`,
+  `split -l` use POSIX-portable options only (GNU **and** BSD/macOS).
+- A **Tenable Cloud Security API token** (`TENABLE_CS_API_URL`, `TENABLE_CS_API_TOKEN`).
+
+> The **README states 3.7 as the floor conservatively**; if your fleet standardizes on a
+> newer Python that's fine — nothing requires it. There are **no pinned package versions**
+> because there are no third-party packages.
 
 ## Quick start (synthetic sample)
 

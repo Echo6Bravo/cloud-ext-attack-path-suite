@@ -29,6 +29,7 @@ scripts/` by `build.sh`); the renderer holds no thresholds.
 
 ## Requirements
 - Tenable Cloud Security `tcs` MCP connector.
-- Python 3.8+ (standard library only).
+- Python 3.7+ (standard library only; invoked as `python3`). Optional `run_chunked.sh`
+  driver needs bash 3.2+ and the `claude` CLI.
 
 MIT licensed. Never commit real assessment data.

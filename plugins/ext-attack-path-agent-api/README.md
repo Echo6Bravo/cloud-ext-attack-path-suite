@@ -55,7 +55,8 @@ echo 'query { __typename }' | ./scripts/tcs_graphql.sh          # connectivity c
 `assembled.json` exists.
 
 ## Requirements
-- `bash`, `curl`, `jq`; Python 3.8+ (standard library only).
+- **bash 3.2+**, **curl** (any 7.x; no `--fail-with-body` dependency), **jq 1.5+**;
+  **Python 3.7+** (standard library only, invoked as `python3`). Portable GNU/BSD flags only.
 - A Tenable Cloud Security API token with read access.
 
 MIT licensed. **Never commit the token or real assessment data** (the repo `.gitignore`
