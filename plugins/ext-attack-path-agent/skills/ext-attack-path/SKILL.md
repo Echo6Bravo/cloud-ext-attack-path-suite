@@ -88,6 +88,17 @@ Call `mcp__tcs__udm_get_instructions` to load the current UDM schema. Then run
 canonical queries are in `references/udm-queries.md` (and regenerable via the spec's
 `build_*` functions).
 
+### 1b. Schema-drift canary (do this BEFORE pulling — prevents a silent empty report)
+The queries depend on specific UDM field identifiers; if Tenable renames/removes one, a
+query returns empty and the report would look "clean" when it isn't. Guard against that:
+call `mcp__tcs__udm_get_object_type_metadata` for each type the queries use —
+`IVirtualMachine`, `Vulnerability`, `NetworkEndpoint`, `PackageVulnerabilityInstanceModel` —
+and pass the results to `attack_path_spec.check_schema({...})`. It compares them against the
+spec's `REQUIRED_FIELDS` (kept in lockstep with the queries by a self-test) and returns
+`{"ok",...}`. **If `ok` is false, STOP and report the exact missing `field`/`type`** — do not
+pull or render; the queries need updating for the new schema. (`parse_metadata_identifiers`
+accepts the tool's markdown output directly.)
+
 ### 2. Establish scope
 Query the distinct accounts/tenants in scope by provider (from `EntityTenant` /
 `EntityTypeName` on the population). Capture the report date. State the scope plainly in

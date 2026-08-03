@@ -153,6 +153,63 @@ if fails:
     sys.exit(1)
 PY
 
+echo "== 9. remediation guidance is specific for mapped services + a real generic fallback =="
+python3 - <<'PY' && ok "remediation: per-CVE / per-service / generic layers" || bad "remediation layering"
+import re,sys
+src=open("render_report.py").read()
+ns={"esc":lambda s:s if s is not None else ""}
+class FakeSpec: EPSS_FLOOR=0.30
+ns["spec"]=FakeSpec
+block=src[src.index("REM_CVE={"): src.index("def esc_txt")+len("def esc_txt(s): return str(s) if s is not None else \"\"")]
+exec(block, ns); rem=ns["rem"]
+checks=[
+  (rem({"cve":"CVE-2024-38475","service":"apache2","port":443}), "Apache httpd"),   # exact CVE
+  (rem({"cve":"X","service":"postgresql","port":5432}), "5432"),                     # per-service names the port
+  (rem({"cve":"X","service":"docker","port":2375}), "daemon API"),                   # per-service docker warning
+  (rem({"cve":"X","service":None,"component":"weird","port":8443}), "weird"),         # generic names the component
+]
+bad=[(got,want) for got,want in checks if want not in got]
+# generic must NOT be the old one-liner-only; must mention restrict exposure
+if "restrict its internet exposure" not in rem({"cve":"X","service":None,"component":"z","port":1}): bad.append(("generic","missing restrict advice"))
+if bad:
+    for g,w in bad: print(f"    FAIL: expected '{w}' in: {g[:80]}")
+    sys.exit(1)
+PY
+
+echo "== 10. schema-drift canary: covers query fields, passes intact, fires on a rename =="
+python3 - <<'PY' && ok "schema-drift canary" || bad "schema-drift canary"
+import sys, attack_path_spec as s
+# REQUIRED_FIELDS must cover every field the queries reference (guards against falling behind)
+ref=set()
+def w(o):
+    if isinstance(o,dict):
+        for k in ("propertyIdentifier","relationPropertyIdentifier"):
+            if isinstance(o.get(k),str): ref.add(o[k])
+        if isinstance(o.get("identifier"),str) and o.get("queryId"): ref.add(o["identifier"])
+        for v in o.values(): w(v)
+    elif isinstance(o,list):
+        for v in o: w(v)
+for b in (s.build_population_query,s.build_inventory_query,s.build_endpoints_query,s.build_cve_query): w(b())
+declared=set().union(*s.REQUIRED_FIELDS.values())
+gap=ref-declared
+fails=[]
+if gap: fails.append(("REQUIRED_FIELDS misses query fields",gap))
+# intact metadata -> ok
+intact={t:list(f) for t,f in s.REQUIRED_FIELDS.items()}
+if not s.check_schema(intact)["ok"]: fails.append(("intact check not ok",None))
+# a rename -> fires with the exact field
+drift=dict(intact); drift["Vulnerability"]=[x for x in intact["Vulnerability"] if x!="VulnerabilityEpssScore"]
+r=s.check_schema(drift)
+if r["ok"] or not any(m["field"]=="VulnerabilityEpssScore" for m in r["missing"]):
+    fails.append(("rename not detected",r))
+# markdown parse (the shape the MCP tool returns)
+if "VirtualMachineStatus" not in s.parse_metadata_identifiers("|Identifier|\n|---|\n|VirtualMachineStatus|Status|CommonEnum|null|"):
+    fails.append(("markdown parse",None))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
 echo ""
 [ $FAIL -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit $FAIL

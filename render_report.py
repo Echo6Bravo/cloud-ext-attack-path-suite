@@ -117,13 +117,19 @@ def _norm_cve(m):
     def num(v):
         try: return float(v) if v is not None else 0.0
         except (TypeError,ValueError): return 0.0
+    epss=num(m.get("epss")); kev=bool(m.get("kev"))
+    # gate_reason is optional in the input; derive it from epss/kev if absent so a hand-built
+    # or older assembled.json can't crash evidence_cell().
+    gr=m.get("gate_reason")
+    if gr not in ("both","kev","epss"):
+        gr = "both" if (kev and epss>=spec.EPSS_FLOOR) else ("kev" if kev else "epss")
     return {**m,
         "instance_id": m.get("instance_id"),
         "name": m.get("name") if m.get("name") is not None else "(unknown)",
         "component": (m.get("component") or ""),
         "cve": m.get("cve") if m.get("cve") is not None else "(no CVE id)",
-        "epss": num(m.get("epss")), "cvss": num(m.get("cvss")),
-        "kev": bool(m.get("kev")),
+        "epss": epss, "cvss": num(m.get("cvss")),
+        "kev": kev, "gate_reason": gr,
         "severity": m.get("severity") if m.get("severity") is not None else "",
         "status": m.get("status") if m.get("status") is not None else "Open"}
 
@@ -200,11 +206,61 @@ for a in accts: ACCT_BY_PROVIDER.setdefault(provider_of(a),[]).append(a)
 def esc(s): return html.escape(str(s)) if s is not None else ""
 SVC_LABEL={"openssh-server":"OpenSSH (sshd)","apache2":"Apache HTTP","httpd":"Apache HTTP (httpd)","nginx":"nginx","tomcat":"Tomcat","mysql-server":"MySQL","mariadb-server":"MariaDB","grafana":"Grafana","redis-server":"Redis","windows-os":"Windows RDP/OS"}
 def svc_label(k): return SVC_LABEL.get(k,k or "service")
-REM={"CVE-2023-38408":"Upgrade OpenSSH to 9.3p2+; disable ssh-agent PKCS#11 forwarding.",
- "CVE-2025-59287":"Apply the WSUS/Windows security update (out-of-band Oct 2025).",
- "CVE-2024-38475":"Upgrade Apache httpd to 2.4.60+.","CVE-2023-25690":"Upgrade Apache httpd to 2.4.56+.",
- "CVE-2025-49844":"Upgrade Redis (Lua RCE); require AUTH; bind localhost; never expose 6379."}
-def rem(c): return REM.get(c,"Apply the vendor-fixed version for the affected service.")
+# Remediation guidance, layered most-specific first so EVERY finding gets actionable advice:
+#   1) REM_CVE   -- exact per-CVE guidance where we have a precise, curated fix.
+#   2) REM_SVC   -- per-service structured advice (patch + network-restriction + hardening),
+#                   keyed on the resolved service_key so any mapped service is covered.
+#   3) generic   -- names the component + port and gives the always-true actions.
+# This replaces the old "5 CVEs + one generic sentence" so a large report is actionable.
+REM_CVE={
+ "CVE-2023-38408":"Upgrade OpenSSH to 9.3p2+; disable ssh-agent PKCS#11 forwarding (PermitAgentForwarding no).",
+ "CVE-2025-59287":"Apply the out-of-band WSUS/Windows security update (Oct 2025); restrict 8530/8531.",
+ "CVE-2024-38475":"Upgrade Apache httpd to 2.4.60+ (mod_rewrite path handling).",
+ "CVE-2023-25690":"Upgrade Apache httpd to 2.4.56+ (mod_proxy request smuggling).",
+ "CVE-2025-49844":"Upgrade Redis (Lua-engine RCE); require AUTH; bind to localhost; never expose 6379.",
+}
+# service_key -> (patch guidance, network-restriction guidance, hardening guidance)
+REM_SVC={
+ "openssh-server":("Patch OpenSSH to the current vendor release.","Restrict 22 to a bastion/VPN CIDR or an SSM/IAP tunnel; never 0.0.0.0/0.","Key-only auth, disable password + root login."),
+ "apache2":("Upgrade Apache httpd to the current 2.4.x.","Front with a WAF/LB; expose only 80/443.","Disable unused modules; keep mod_security current."),
+ "httpd":("Upgrade Apache httpd to the current 2.4.x.","Front with a WAF/LB; expose only 80/443.","Disable unused modules; keep mod_security current."),
+ "nginx":("Upgrade nginx to the current stable/mainline.","Front with a WAF/LB; expose only 80/443.","Disable unused modules; validate proxy/redirect config."),
+ "tomcat":("Upgrade Tomcat to the current supported branch.","Never expose the AJP/manager ports; front app ports with a LB.","Remove default/manager apps; lock down manager roles."),
+ "mysql-server":("Patch MySQL to the current vendor release.","Do NOT expose 3306 to the internet; use a private subnet/bastion.","Enforce TLS, strong auth, least-privilege DB users."),
+ "mariadb-server":("Patch MariaDB to the current vendor release.","Do NOT expose 3306 to the internet; use a private subnet/bastion.","Enforce TLS, strong auth, least-privilege DB users."),
+ "postgresql":("Patch PostgreSQL to the current minor release.","Do NOT expose 5432 to the internet; restrict via SG + pg_hba.conf.","Enforce TLS (sslmode), scram-sha-256, least-privilege roles."),
+ "mongodb":("Patch MongoDB to the current release.","Do NOT expose 27017 publicly; bind to private IPs.","Enable auth + TLS; disable anonymous access."),
+ "redis-server":("Patch Redis to the current release.","Never expose 6379 publicly; bind to localhost/private.","Require AUTH/ACLs; disable dangerous commands."),
+ "memcached":("Patch memcached to the current release.","Never expose 11211 publicly (UDP amplification risk); bind private.","Disable UDP; enable SASL if available."),
+ "elasticsearch":("Patch Elasticsearch/OpenSearch to the current release.","Do NOT expose 9200/9300 publicly; put behind auth proxy/VPN.","Enable security (auth+TLS); disable anonymous."),
+ "opensearch":("Patch OpenSearch to the current release.","Do NOT expose 9200/9300 publicly; put behind auth proxy/VPN.","Enable the security plugin (auth+TLS)."),
+ "docker":("Patch Docker/containerd.","NEVER expose the daemon API (2375/2376) to the internet — full host compromise.","Use TLS client certs; prefer a local socket only."),
+ "dockerd":("Patch Docker/containerd.","NEVER expose the daemon API (2375/2376) to the internet — full host compromise.","Use TLS client certs; prefer a local socket only."),
+ "kubelet":("Patch the kubelet to the cluster's supported version.","Do NOT expose 10250 publicly; restrict to the control plane.","Enable webhook authz + TLS; disable anonymous-auth."),
+ "kube-apiserver":("Patch the API server to a supported version.","Restrict 6443 to admin CIDRs/VPN; never 0.0.0.0/0.","RBAC least-privilege; enable audit logging."),
+ "grafana":("Upgrade Grafana to the current release.","Front with SSO/reverse proxy; restrict 3000.","Disable anonymous access; rotate admin creds."),
+ "jenkins":("Upgrade Jenkins core + plugins.","Do NOT expose 8080 publicly; put behind SSO/VPN.","Enable auth + CSRF; least-privilege jobs."),
+ "vsftpd":("Patch the FTP server; prefer SFTP/FTPS.","Restrict 21 + passive range; avoid public FTP.","Disable anonymous; enforce TLS."),
+ "proftpd":("Patch the FTP server; prefer SFTP/FTPS.","Restrict 21 + passive range; avoid public FTP.","Disable anonymous; enforce TLS."),
+ "postfix":("Patch the mail server.","Restrict inbound 25 to MX peers; submission (587) over TLS+auth only.","No open relay; enforce TLS + SPF/DKIM."),
+ "exim4":("Patch Exim to the current release (several critical RCEs historically).","Restrict 25 to MX peers.","No open relay; enforce TLS."),
+ "bind":("Patch BIND to the current release.","Restrict recursion to internal clients; expose 53 only if authoritative.","Disable open recursion; enable RRL."),
+ "named":("Patch BIND to the current release.","Restrict recursion to internal clients.","Disable open recursion; enable RRL."),
+ "samba":("Patch Samba.","NEVER expose 445/139 to the internet; restrict to LAN/VPN.","Disable SMBv1; enforce signing."),
+ "windows-os":("Apply the current Windows cumulative/security updates.","Never expose RDP 3389 or SMB 445 to the internet; use a bastion/VPN.","Enable NLA; enforce MFA on remote access."),
+}
+def rem(row):
+    """Actionable remediation for a finding row (needs cve + service + port)."""
+    cve=row.get("cve"); sk=row.get("service"); port=row.get("port")
+    if cve in REM_CVE: return REM_CVE[cve]
+    if sk in REM_SVC:
+        patch,restrict,harden=REM_SVC[sk]
+        return f"{patch} {restrict} {harden}"
+    comp=row.get("component") or "the affected service"
+    where=f" on port {port}" if port else ""
+    return (f"Apply the vendor-fixed version of {esc_txt(comp)}{where}; restrict its internet "
+            f"exposure to a bastion/VPN/allow-list; and replace any over-privileged workload identity.")
+def esc_txt(s): return str(s) if s is not None else ""
 
 # ---- Tenable theme (validated earlier) ----
 CSS="""
@@ -420,7 +476,7 @@ def vtable(h,name):
           f'<td>{esc(c["year"])}</td><td class="ipport">{esc(ipport)}</td><td>{esc(svc_label(c["service"]))}</td>'
           f'<td>{epss_pill(c["epss"])}</td><td>{cvss_pill(c["cvss"])}</td>'
           f'<td>{esc(c["severity"])}</td><td>{evidence_cell(c)}</td>'
-          f'<td>{esc(rem(c["cve"]))}</td></tr>')
+          f'<td>{esc(rem(c))}</td></tr>')
     if extra:
         out.append(f'<tr><td colspan="9" style="color:var(--mut);font-style:italic">'
                    f'+ {extra} more qualifying CVE(s) on this host (showing top {args.max_cves_per_host} by EPSS/CVSS)</td></tr>')

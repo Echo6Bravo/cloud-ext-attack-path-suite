@@ -270,6 +270,15 @@ pull** and the **output size**, both addressed:
 - **Determinism.** Rendering is a pure function of `assembled.json` + `--date`; two renders
   of the same inputs are byte-identical (query GUIDs are random but live only in generated
   queries, not the report), so reports are diffable/auditable across runs.
+- **Schema-drift canary.** The queries depend on specific Tenable field identifiers; if one
+  is renamed/removed a query would silently return empty. `attack_path_spec.check_schema()`
+  compares the fields the queries need (`REQUIRED_FIELDS`, kept in lockstep with the queries
+  by a self-test) against live object-type metadata / GraphQL introspection **before**
+  pulling, so a schema change **fails loud** with the exact missing field/type instead of
+  producing a deceptively clean report.
+- **Actionable remediation.** Every finding gets specific guidance — exact-CVE fixes where
+  curated, else per-service advice (patch + port-restriction + hardening) for ~35 services,
+  else a component/port-named generic fallback. No unhelpful one-size filler at scale.
 
 ## Testing & CI
 

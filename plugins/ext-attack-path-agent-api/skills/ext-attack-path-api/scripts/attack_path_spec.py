@@ -288,6 +288,74 @@ def plan_chunks(account_sizes, region_sizes=None, budget=ROWS_PER_RUN):
                                   "why":"region still over budget; narrow further (e.g. by severity window) or accept truncation"})
     return {"mode":"region","chunks":chunks,"oversized":oversized}
 
+# ----------------------------------------------------------------------------
+# 2b. Schema-drift canary
+# ----------------------------------------------------------------------------
+# Every UDM field the generated queries depend on, grouped by the object type it must exist
+# on. If Tenable renames/removes a field, a query would silently return empty (or error);
+# check_schema() compares this against live metadata (udm_get_object_type_metadata) so the
+# agent can FAIL LOUD with a precise "field X missing on type Y" instead of shipping an empty
+# report. Keep this in sync with the build_* functions -- the self-tests assert it covers
+# exactly the fields the queries reference, so it can't silently fall behind.
+REQUIRED_FIELDS = {
+    "IVirtualMachine": {
+        "VirtualMachineStatus","EntityNetworkAccessType","EntityNetworkAccessScope",
+        "NetworkDynamicAnalysisResourceNetworkEndpoints","EntityPackageVulnerabilityInstances",
+        "EntityName","EntityTypeName","EntityTenant","EntityAttributes",
+        "OriginatorEntityServiceIdentities","EntityRegion",
+    },
+    "NetworkEndpoint": {
+        "NetworkEndpointHost","NetworkEndpointPort","NetworkEndpointProtocolType",
+        "NetworkEndpointNetworkDynamicAnalysisResource",
+    },
+    "PackageVulnerabilityInstanceModel": {
+        "PackageVulnerabilityInstanceStatus","PackageVulnerabilityInstanceVulnerability",
+        "PackageVulnerabilityInstanceEntity",
+    },
+    "Vulnerability": {
+        "VulnerabilityAttackVector","VulnerabilityAttackComplexity","VulnerabilityEpssScore",
+        ALLOWED_KEV_FIELD,"VulnerabilityCvssScore","VulnerabilitySeverity",POC_FIELD,
+    },
+}
+
+def parse_metadata_identifiers(md):
+    """Extract the set of property identifiers from one udm_get_object_type_metadata result.
+    Accepts either the raw markdown table string that the MCP tool returns, or a pre-parsed
+    list of identifier strings / list of dicts with an 'Identifier'/'identifier' key."""
+    ids=set()
+    if md is None: return ids
+    if isinstance(md, str):
+        for line in md.splitlines():
+            line=line.strip()
+            if not line.startswith("|"): continue
+            cell=line.strip("|").split("|",1)[0].strip()
+            # skip the header row and separator row
+            if not cell or cell in ("Identifier",) or set(cell)<=set("-: "): continue
+            ids.add(cell)
+        return ids
+    if isinstance(md, (list,tuple,set)):
+        for x in md:
+            if isinstance(x,str): ids.add(x)
+            elif isinstance(x,dict):
+                v=x.get("Identifier") or x.get("identifier")
+                if v: ids.add(v)
+    return ids
+
+def check_schema(metadata_by_type):
+    """Compare REQUIRED_FIELDS against live metadata. `metadata_by_type` maps object-type name
+    -> whatever udm_get_object_type_metadata returned for it (markdown or parsed). Returns
+    {"ok":bool, "missing":[{type,field}], "unchecked":[types not supplied]}. The caller (agent
+    or --schema-check) fails loud on any missing field rather than emitting an empty report."""
+    missing=[]; unchecked=[]
+    for typ, fields in REQUIRED_FIELDS.items():
+        if typ not in metadata_by_type or metadata_by_type[typ] is None:
+            unchecked.append(typ); continue
+        have=parse_metadata_identifiers(metadata_by_type[typ])
+        for f in sorted(fields):
+            if f not in have:
+                missing.append({"type":typ,"field":f})
+    return {"ok": not missing, "missing":missing, "unchecked":unchecked}
+
 # --- reusable sub-builders so the WHOLE pipeline is generated from the spec ---------
 def _workload_rules(account=None, region=None):
     """Stage-1 workload rules (running + internet-direct + wide), incl. structural Stopped gate.
@@ -701,6 +769,31 @@ def _selftests():
     assert p2["oversized"]==[]                            # region split resolves it
     p3=plan_chunks(big,region_sizes={("a","r1"):900},budget=400)
     assert p3["oversized"] and "narrow further" in p3["oversized"][0]["why"]  # still-too-big flagged
+    # --- schema-drift canary ---
+    # REQUIRED_FIELDS must cover EXACTLY the query-referenced fields (minus EntityRegion, used
+    # only for optional region chunking) so the canary can't silently fall behind the queries.
+    referenced=set()
+    def _walk(o):
+        if isinstance(o,dict):
+            for k in ("propertyIdentifier","relationPropertyIdentifier"):
+                if isinstance(o.get(k),str): referenced.add(o[k])
+            if isinstance(o.get("identifier"),str) and o.get("queryId"): referenced.add(o["identifier"])
+            for v in o.values(): _walk(v)
+        elif isinstance(o,list):
+            for v in o: _walk(v)
+    for b in (build_population_query,build_inventory_query,build_endpoints_query,build_cve_query): _walk(b())
+    declared=set().union(*REQUIRED_FIELDS.values())
+    missing_from_canary=referenced - declared
+    assert not missing_from_canary, f"REQUIRED_FIELDS missing query fields: {missing_from_canary}"
+    # parse_metadata_identifiers handles the markdown-table shape the MCP tool returns
+    md="|Identifier|Title|DataType|Relation|\n|---|---|---|---|\n|VirtualMachineStatus|Status|CommonEnum|null|\n|EntityName|Name|InfraString|null|"
+    ids=parse_metadata_identifiers(md); assert "VirtualMachineStatus" in ids and "Identifier" not in ids
+    # check_schema: all present -> ok; a renamed field -> loud miss; missing type -> unchecked
+    full={t:list(f) for t,f in REQUIRED_FIELDS.items()}
+    assert check_schema(full)["ok"] is True
+    drift=dict(full); drift["IVirtualMachine"]=[x for x in full["IVirtualMachine"] if x!="VirtualMachineStatus"]
+    r=check_schema(drift); assert r["ok"] is False and any(m["field"]=="VirtualMachineStatus" for m in r["missing"])
+    assert "Vulnerability" in check_schema({"IVirtualMachine":full["IVirtualMachine"]})["unchecked"]
     print("ALL SELF-TESTS PASSED")
     return q
 
