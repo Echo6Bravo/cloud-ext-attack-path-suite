@@ -1,0 +1,56 @@
+name: CI
+
+# Enterprise-readiness gate: proves the suite runs on the documented version floors
+# (Python 3.7+, old curl/jq) with stdlib only — no third-party packages.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-matrix:
+    name: Python ${{ matrix.python }} (stdlib-only suite)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.7", "3.8", "3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run portable test suite
+        run: bash tests/run_tests.sh
+
+  old-curl:
+    name: Old curl/jq portability (RHEL8/buster-era)
+    runs-on: ubuntu-latest
+    # curl 7.64 + jq 1.5 — both below the 7.76 that --fail-with-body needs, so this fails
+    # if anyone reintroduces a modern-only curl flag.
+    container: debian:buster-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install old toolchain from archive
+        run: |
+          sed -i 's|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g; /buster-updates/d' /etc/apt/sources.list
+          apt-get -o Acquire::Check-Valid-Until=false -qq update
+          apt-get -qq install -y jq curl python3 ca-certificates
+          curl --version | head -1
+      - name: Run suite (exercises the GraphQL caller on old curl)
+        run: bash tests/run_tests.sh
+
+  shellcheck:
+    name: ShellCheck (bash portability lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint all shell scripts
+        run: |
+          sudo apt-get -qq update && sudo apt-get -qq install -y shellcheck
+          # -e SC1090/SC1091: sourced-path resolution not relevant here
+          find . -name '*.sh' -not -path './dist/*' -print0 \
+            | xargs -0 shellcheck -S warning -e SC1090,SC1091 || true
+          echo "shellcheck advisory run complete"

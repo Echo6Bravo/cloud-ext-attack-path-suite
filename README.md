@@ -238,6 +238,20 @@ pull** and the **output size**, both addressed:
   render would exceed **1 GB** (unopenable). `assemble.py --max-hosts N` bounds the set
   earlier still.
 
+## Testing & CI
+
+A dependency-free test suite (`tests/run_tests.sh`) covers the spec self-tests, the
+deterministic chunk `plan` CLI, MCP-mode and reduced (`--no-endpoint`) rendering, and the
+GraphQL caller's HTTP handling against a local mock (no tenant/token needed). CI
+(`.github/workflows/ci.yml`) runs it across a **Python 3.7 → 3.12 matrix** and inside a
+**curl 7.64 / jq 1.5 (RHEL8/buster-era) container** — so the documented version floors are
+enforced continuously, and a modern-only flag (e.g. `curl --fail-with-body`, which needs
+7.76+) can't regress in unnoticed. Run locally with `bash tests/run_tests.sh`.
+
+> Verified on real containers: the suite passes on Python 3.7.17 / 3.8.20 / 3.9.25, and the
+> GraphQL caller returns the body on 2xx and fails loud (`HTTP 401`, exit 22) on error on
+> curl 7.64.0 + jq 1.5.
+
 ## Requirements & runtime dependencies
 
 **Shared (both editions)**
