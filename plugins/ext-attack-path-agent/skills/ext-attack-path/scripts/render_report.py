@@ -515,6 +515,17 @@ else:
     reduced_banner=""
     confirm_sentence=("Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and")
 
+# Coverage-gap banner: if a chunked run wrote _coverage_gap.txt (some accounts/regions failed
+# to pull), surface it PROMINENTLY so a partial report is never mistaken for complete.
+_gapf=os.path.join(args.data,"_coverage_gap.txt")
+if os.path.exists(_gapf):
+    try:
+        _gaptxt=open(_gapf).read().strip()
+    except OSError:
+        _gaptxt="Some scopes failed to pull; this report is INCOMPLETE."
+    reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; INCOMPLETE COVERAGE.</b> '
+        f'{esc(_gaptxt)} Findings below reflect only the scopes that pulled successfully.</div>' + reduced_banner)
+
 HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>External Attack-Path Report</title><style>{CSS}</style></head><body>
 <div class="bar"></div>

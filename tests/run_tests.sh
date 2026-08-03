@@ -35,9 +35,16 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   CALLER="plugins/ext-attack-path-agent-api/skills/ext-attack-path-api/scripts/tcs_graphql.sh"
   python3 - <<'PY' &
 import http.server, json
+S={"flaky":0}
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n=int(self.headers.get("Content-Length",0)); self.rfile.read(n)
+        if "flaky" in self.path:            # 429 twice (with Retry-After) then 200
+            S["flaky"]+=1
+            if S["flaky"]<3:
+                self.send_response(429); self.send_header("Retry-After","1"); self.end_headers()
+                self.wfile.write(b'{"errors":[{"message":"rate limited"}]}'); return
+            self.send_response(200); self.end_headers(); self.wfile.write(b'{"data":{"ok":true}}'); return
         code=200 if "good" in self.path else 401
         self.send_response(code); self.send_header("Content-Type","application/json"); self.end_headers()
         b={"data":{"__typename":"Query"}} if code==200 else {"errors":[{"message":"unauthorized"}]}
@@ -50,7 +57,10 @@ PY
   OUT=$(TENABLE_CS_API_URL=http://127.0.0.1:8099/good TENABLE_CS_API_TOKEN=x bash "$CALLER" <<<'query{__typename}' 2>/dev/null)
   echo "$OUT" | grep -q '"__typename"' && ok "caller 2xx returns body" || bad "caller 2xx"
   TENABLE_CS_API_URL=http://127.0.0.1:8099/bad TENABLE_CS_API_TOKEN=x bash "$CALLER" <<<'query{__typename}' >/dev/null 2>&1
-  [ $? -ne 0 ] && ok "caller fails loud on HTTP 401" || bad "caller error path (should be non-zero)"
+  [ $? -ne 0 ] && ok "caller fails loud on HTTP 401 (not retryable)" || bad "caller error path (should be non-zero)"
+  # retry/backoff: /flaky returns 429 twice then 200 -> caller must retry and ultimately succeed
+  ROUT=$(TCS_BACKOFF_BASE=1 TENABLE_CS_API_URL=http://127.0.0.1:8099/flaky TENABLE_CS_API_TOKEN=x bash "$CALLER" <<<'query{__typename}' 2>/dev/null)
+  echo "$ROUT" | grep -q '"ok"' && ok "caller retries 429 w/ backoff then succeeds" || bad "caller 429 retry"
   kill $MOCK 2>/dev/null
 else
   echo "  [SKIP] curl/jq not present; skipping caller test"

@@ -49,6 +49,8 @@ EOF
 fi
 
 RAW_DIR="$DATA_DIR/raw"; mkdir -p "$RAW_DIR"; rm -f "$RAW_DIR"/raw_*.json 2>/dev/null || true
+# clear any stale coverage-gap marker from a prior run so a clean run isn't mis-flagged
+rm -f "$DATA_DIR/_coverage_gap.txt" 2>/dev/null || true
 
 # --- 2. PLAN (deterministic) ---
 # Human-readable plan (for the log/_plan.json) and a machine-readable TSV (for the loop).
@@ -63,7 +65,14 @@ if [ "${OVERN:-0}" != "0" ]; then
   echo "  They will be pulled but MAY be truncated by context. Narrow further (severity/time window) or raise --budget deliberately." >&2
 fi
 
+# Partial-failure tracking: a chunk that fails is recorded and SKIPPED, not fatal -- one bad
+# account must not discard the other N-1 that succeeded. Failed scopes are listed in the
+# report gap-note and the run exits 3 (incomplete-but-report-produced) so a scheduler can
+# alert without losing the partial result. set -e is relaxed around the per-chunk call only.
+FAILED_SCOPES=""
+
 # Emit one Claude prompt for a given scope and run it headless (fresh context each).
+# Returns non-zero on failure; caller records it and continues.
 run_scope () {
   local tag="$1" acct="$2" region="$3" scope_py
   if [ "$tag" = "tenant" ]; then scope_py=""      # whole tenant: no account/region scoping
@@ -76,23 +85,49 @@ ${RAW_DIR}/raw_A_${tag}_p<N>.json, raw_B_${tag}_p<N>.json, raw_C_${tag}_p<N>.jso
 Do NOT assemble or render; only write raw pages."
   echo "[$(date +%FT%T)] --- pull scope: ${tag} ---"
   if command -v claude >/dev/null 2>&1; then
-    claude -p "$prompt" --allowedTools "mcp__tcs__udm_execute_query" "Write" </dev/null \
-      || { echo "  [${tag}] claude run failed" >&2; exit 1; }
+    if ! claude -p "$prompt" --allowedTools "mcp__tcs__udm_execute_query" "Write" </dev/null; then
+      echo "  [${tag}] pull FAILED -- recording gap and continuing" >&2
+      return 1
+    fi
   else
     echo "  'claude' CLI not found. Run this prompt in a FRESH Claude Code session, then re-run to merge:" >&2
     printf '  ---\n%s\n  ---\n' "$prompt"
   fi
+  return 0
 }
 
 # --- 3. PULL per the plan (plain while-read over the TSV; no process substitution) ---
 printf '%s\n' "$PLAN_TSV" | grep -v '^MODE' > "$RAW_DIR/_chunks.tsv"
+NCHUNKS=0; NFAILED=0
 while IFS=$'\t' read -r tag acct region; do
   [ -z "$tag" ] && continue
-  run_scope "$tag" "$acct" "$region"
+  NCHUNKS=$((NCHUNKS+1))
+  if ! run_scope "$tag" "$acct" "$region"; then
+    NFAILED=$((NFAILED+1)); FAILED_SCOPES="${FAILED_SCOPES}${FAILED_SCOPES:+, }${tag}"
+  fi
 done < "$RAW_DIR/_chunks.tsv"
 
-# --- 4. MERGE ---
-echo "[$(date +%FT%T)] assembling merged report..."
+# If EVERY chunk failed there is nothing to report -- that's a hard failure.
+if [ "$NFAILED" -gt 0 ] && [ "$NFAILED" -ge "$NCHUNKS" ]; then
+  echo "[$(date +%FT%T)] ERROR: all $NCHUNKS chunk(s) failed; no data pulled. Aborting." >&2
+  exit 1
+fi
+
+# Record the coverage gap so it surfaces IN the report (never a silent partial).
+GAP_NOTE=""
+if [ "$NFAILED" -gt 0 ]; then
+  GAP_NOTE="INCOMPLETE: ${NFAILED} of ${NCHUNKS} scopes failed to pull and are MISSING from this report: ${FAILED_SCOPES}. Re-run those scopes."
+  echo "[$(date +%FT%T)] WARNING: $GAP_NOTE" >&2
+  printf '%s\n' "$GAP_NOTE" > "$DATA_DIR/_coverage_gap.txt"
+fi
+
+# --- 4. MERGE (of whatever succeeded) ---
+echo "[$(date +%FT%T)] assembling report from $((NCHUNKS-NFAILED))/${NCHUNKS} scope(s)..."
 python3 "$ROOT/assemble.py" --raw "$RAW_DIR" --out "$DATA_DIR/assembled.json" --endpoint-ips "$DATA_DIR/endpoint_ips.json"
 python3 "$ROOT/render_report.py" --data "$DATA_DIR" --date "$DATE" --out "./output/attack-paths-report-${DATE}.html"
 echo "[$(date +%FT%T)] done -> ./output/attack-paths-report-${DATE}.html"
+# Exit 3 = report produced but INCOMPLETE (some scopes missing); 0 = fully complete.
+if [ "$NFAILED" -gt 0 ]; then
+  echo "[$(date +%FT%T)] NOTE: report is INCOMPLETE ($NFAILED scope(s) missing: $FAILED_SCOPES); exit 3." >&2
+  exit 3
+fi

@@ -251,6 +251,26 @@ pull** and the **output size**, both addressed:
   render would exceed **1 GB** (unopenable). `assemble.py --max-hosts N` bounds the set
   earlier still.
 
+## Operational behavior (for schedulers / unattended runs)
+
+- **Exit codes** (`render_report.py` and the chunked driver): `0` = success (a complete
+  report, including the empty-findings and messy-but-renderable cases); `2` = input error
+  (missing/malformed `assembled.json`, wrong types — with a clear `ERROR:` message, never a
+  traceback); `3` = **report produced but INCOMPLETE** (a chunked run where some
+  accounts/regions failed to pull); `1` = total failure (no data pulled). A scheduler can
+  branch on these.
+- **API retry/backoff.** `tcs_graphql.sh` automatically retries HTTP **429 (throttling)**
+  and **5xx** with exponential backoff, honoring `Retry-After` when present
+  (`TCS_MAX_RETRIES`, `TCS_BACKOFF_BASE` tunable). Non-retryable 4xx (401/403/400) fail
+  fast. A large-tenant pull *will* be rate-limited; this prevents a first-429 abort.
+- **Partial-failure tolerance.** In a chunked run, a failed account/region is recorded and
+  **skipped**, not fatal — the report is still produced from the scopes that succeeded, with
+  a prominent **"INCOMPLETE COVERAGE"** banner listing the missing scopes (never a silent
+  partial). Only an all-chunks-failed run aborts.
+- **Determinism.** Rendering is a pure function of `assembled.json` + `--date`; two renders
+  of the same inputs are byte-identical (query GUIDs are random but live only in generated
+  queries, not the report), so reports are diffable/auditable across runs.
+
 ## Testing & CI
 
 A dependency-free test suite (`tests/run_tests.sh`) covers the spec self-tests, the
