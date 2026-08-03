@@ -28,6 +28,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 
 import attack_path_spec as spec
@@ -134,8 +135,38 @@ def _gate_reason(epss, kev):
     return "epss"
 
 
+_CVE_SEG = re.compile(r"^(?:cve|dla|dsa|usn|ghsa|rhsa|elsa|dla|dls)[-:]", re.I)
+
+def parse_instance_id(inst_id):
+    """Parse a PackageVulnerabilityInstance Id into (cve_or_advisory, component).
+
+    Observed shape (all providers): '<advisory-id>/<package>/<version>/<os>/<resource-id...>'
+    e.g. 'cve-2011-3389/libgnutls30/3.7.1-5+deb11u3/Linux/arn:aws:ec2:...'.
+    Structure-aware rather than blindly positional:
+      * advisory id  = segment 0 IF it looks like a CVE/advisory id, else "".
+      * component    = the segment immediately AFTER the advisory id (segment 1). This is the
+                       package even when the resource-id tail contains extra '/' (AWS ARNs,
+                       GCP resource paths, Azure resourceGroups) because those live in later
+                       segments. A leading empty segment (id starting with '/') is skipped.
+    Returns ("","") for an empty/degenerate id rather than raising."""
+    if not inst_id:
+        return ("", "")
+    segs = inst_id.split("/")
+    # tolerate a leading empty segment (id that begins with '/')
+    start = 0
+    while start < len(segs) and segs[start] == "":
+        start += 1
+    if start >= len(segs):
+        return ("", "")
+    first = segs[start]
+    advisory = first if _CVE_SEG.match(first) else ""
+    # component is the segment after the advisory id; if segment 0 wasn't an advisory id we
+    # can't trust the layout, so return no component (caller falls back / it lands in review).
+    component = segs[start + 1] if (advisory and start + 1 < len(segs)) else ""
+    return (advisory, component)
+
 def load_cves(raw_dir):
-    """C rows: one per (host, cve). component = 2nd path segment of the instance Id."""
+    """C rows: one per (host, cve). component parsed structurally from the instance Id."""
     C = []
     for page in _load_pages(raw_dir, "raw_C_"):
         for qmap in _rows(page):
@@ -146,9 +177,9 @@ def load_cves(raw_dir):
             if not inst or not vuln or not ent:
                 continue
             inst_id = inst.get("Id", "")
-            segs = inst_id.split("/")
-            component = segs[1] if len(segs) > 1 else ""
-            cve = (vuln.get("Id") or (segs[0] if segs else "")).upper()
+            id_advisory, component = parse_instance_id(inst_id)
+            # CVE from the joined vuln object first (authoritative), else the parsed advisory id.
+            cve = (vuln.get("Id") or id_advisory or "").upper()
             iid = ent.get("Id")
             epss = vuln.get("VulnerabilityEpssScore")
             kev = bool(vuln.get("VulnerabilityVprV2MetricsOnCisaKev"))

@@ -37,6 +37,12 @@ ap.add_argument("--max-cards",type=int,default=150,
                 help="max full per-host cards to render (0 = unlimited). Extra hosts go to a summary table.")
 ap.add_argument("--max-cves-per-host",type=int,default=25,
                 help="max CVE rows shown per host table (0 = unlimited); extras collapse to 'N more'.")
+ap.add_argument("--max-rows",type=int,default=0,
+                help="MEMORY safety valve: if dataset C exceeds N rows, keep only the top N by "
+                     "risk (KEV, then EPSS) and BANNER the report as truncated. 0 = unlimited "
+                     "(default). The renderer holds rows in memory (no stdlib streaming JSON), "
+                     "so for million-row single scopes bound upstream with assemble.py --max-hosts "
+                     "or set this. Measured: ~111k rows ≈ 286 MB peak.")
 ap.add_argument("--no-endpoint",action="store_true",
                 help="REDUCED mode (API/GraphQL edition): no observed endpoints available, so "
                      "gate 8 degrades to the listening-component test only (no port correlation). "
@@ -86,6 +92,21 @@ def _rows(key):
     return good
 
 data["A"]=_rows("A"); data["B"]=_rows("B"); data["C"]=_rows("C")
+
+# Memory safety valve: bound dataset C before the expensive per-row work (copies, grouping,
+# HTML build). Keep the highest-risk rows (KEV first, then EPSS) and record the truncation so
+# it surfaces in the report banner -- never a silent cut. Upstream `assemble.py --max-hosts`
+# is the better lever (keeps assembled.json itself small), but this protects a render given a
+# huge file directly. 0 = unlimited.
+ROWS_TRUNCATED=0
+if args.max_rows and len(data["C"])>args.max_rows:
+    ROWS_TRUNCATED=len(data["C"])-args.max_rows
+    def _risk(r):
+        try: return (1 if r.get("kev") else 0, float(r.get("epss") or 0))
+        except (TypeError,ValueError): return (0,0.0)
+    data["C"]=sorted(data["C"], key=_risk, reverse=True)[:args.max_rows]
+    sys.stderr.write(f"render_report: WARNING: dataset C truncated to top {args.max_rows} of "
+                     f"{args.max_rows+ROWS_TRUNCATED} rows by risk (--max-rows); report banners this.\n")
 
 # endpoint IP:port map (optional enrichment) -- tolerate a missing/malformed file
 EPIP={}
@@ -580,11 +601,18 @@ else:
 _gapf=os.path.join(args.data,"_coverage_gap.txt")
 if os.path.exists(_gapf):
     try:
-        _gaptxt=open(_gapf).read().strip()
+        with open(_gapf) as _gf: _gaptxt=_gf.read().strip()
     except OSError:
         _gaptxt="Some scopes failed to pull; this report is INCOMPLETE."
     reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; INCOMPLETE COVERAGE.</b> '
         f'{esc(_gaptxt)} Findings below reflect only the scopes that pulled successfully.</div>' + reduced_banner)
+
+# Truncation banner: if --max-rows dropped rows, say so prominently (never a silent cut).
+if ROWS_TRUNCATED:
+    reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; TRUNCATED.</b> '
+        f'This dataset exceeded the --max-rows memory bound; {ROWS_TRUNCATED} lower-risk CVE row(s) '
+        f'were dropped (kept the highest-risk by CISA-KEV then EPSS). Narrow scope (per-account) or '
+        f'raise --max-rows for the complete set.</div>' + reduced_banner)
 
 HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>External Attack-Path Report</title><style>{CSS}</style></head><body>
@@ -664,7 +692,7 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR CISA-KEV). Ranked by privilege tier, then CISA-KEV, then EPSS. Post-filter: {len(excluded)} CVE-rows dropped (client/library/local component, stopped host, or listening-port not exposed); {len(review)} surfaced for review (exposed + exploitable but component not in the service map &mdash; never silently dropped). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
 </footer></body></html>"""
 os.makedirs(os.path.dirname(args.out),exist_ok=True)
-open(args.out,"w").write(HTML)
+with open(args.out,"w") as _out: _out.write(HTML)
 print("wrote report:",args.out,"(",len(HTML),"bytes )")
 print("hosts:",len(allhosts),"(cards:",len(hostlist),"overflow:",len(overflow),") | tier1:",n1p_total,"| tier2:",n2p_total,"| kev-hosts:",nkev,"| accounts:",len(accts))
 print("post-filter: dropped",len(excluded),"| surfaced-for-review",len(review),"(unmapped exposed components)")

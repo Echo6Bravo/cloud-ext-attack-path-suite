@@ -250,6 +250,14 @@ pull** and the **output size**, both addressed:
   a 500-host × 20k-CVE render is ~2.4 MB capped vs. ~11 MB uncapped — and an uncapped 50k
   render would exceed **1 GB** (unopenable). `assemble.py --max-hosts N` bounds the set
   earlier still.
+- **Renderer memory.** The renderer holds the dataset in memory (there is no stdlib
+  streaming-JSON parser, and cross-host KPIs/ranking need the whole set), so peak RSS scales
+  with dataset C — measured **~286 MB at ~111k rows**. That's fine for any realistic
+  qualifying set; for a pathological single scope with *millions* of rows, bound it: prefer
+  `assemble.py --max-hosts N` upstream (keeps `assembled.json` itself small), or
+  `render_report.py --max-rows N` (keeps the top-N by CISA-KEV then EPSS and **banners the
+  report as truncated** — never a silent cut). True streaming would require a third-party
+  JSON parser, which is deliberately avoided to keep the tool dependency-free.
 
 ## Operational behavior (for schedulers / unattended runs)
 
