@@ -210,6 +210,46 @@ if fails:
     sys.exit(1)
 PY
 
+echo "== 11. instance-Id parsing: structural, correct across provider shapes + edge cases =="
+python3 - <<'PY' && ok "instance-Id component parsing" || bad "instance-Id parsing"
+import sys, assemble
+cases=[
+ ("cve-2011-3389/libgnutls30/3.7.1/Linux///compute.googleapis.com/projects/8/instances/vm","cve-2011-3389","libgnutls30"),
+ ("cve-2013-0758/Thunderbird/10/Windows/arn:aws:ec2:us-east-2:896850635108:instance/i-0b","cve-2013-0758","Thunderbird"),
+ ("cve-2025-59287/windows os/10/Windows/arn:aws:ec2:us-east-2:120:instance/i-0c","cve-2025-59287","windows os"),
+ ("cve-2014-0114/commons-beanutils:commons-beanutils/1.8/Linux/824f/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm","cve-2014-0114","commons-beanutils:commons-beanutils"),
+ ("/cve-2020-1/openssh-server/8.9/Linux/x","cve-2020-1","openssh-server"),   # leading slash
+ ("dla-2761-1/libxml2/2.9/Linux/x","dla-2761-1","libxml2"),                  # non-CVE advisory
+ ("","",""), ("garbage","",""), ("notacve/pkg/1/Linux/x","",""),             # degenerate/unsafe -> no component
+]
+fails=[(i[:30],assemble.parse_instance_id(i),(c,comp)) for i,c,comp in cases if assemble.parse_instance_id(i)!=(c,comp)]
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
+echo "== 12. --max-rows memory bound: caps to highest-risk + banners (never silent) =="
+python3 - <<'PY' && ok "--max-rows memory safety valve" || bad "--max-rows"
+import json,os,subprocess,sys,tempfile
+d=tempfile.mkdtemp()
+A=[{"instance_id":"i-1","name":"h","type":"AwsEc2Instance","tenant":"1","privileged":False,"identity_ids":[]}]
+B=[{"instance_id":"i-1","name":"h","ports":[{"port":443,"protocol":"HTTPS"}]}]
+C=[{"instance_id":"i-1","name":"h","cve":f"CVE-2024-{i}","component":"nginx","cvss":9,"epss":e,"kev":k,"severity":"Critical","status":"Open"}
+   for i,e,k in [(1,0.1,False),(2,0.9,True),(3,0.5,False),(4,0.95,False),(5,0.2,True)]]
+json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
+out=os.path.join(d,"r.html")
+r=subprocess.run([sys.executable,"render_report.py","--data",d,"--out",out,"--max-rows","2"],capture_output=True,text=True)
+html=open(out).read()
+fails=[]
+if r.returncode!=0: fails.append(("exit",r.returncode))
+if "TRUNCATED" not in html: fails.append(("no truncation banner",None))
+if "CVE-2024-2" not in html or "CVE-2024-5" not in html: fails.append(("dropped a KEV row",None))  # both KEV must survive
+if "CVE-2024-1" in html: fails.append(("kept a low-risk row over a high one",None))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
 echo ""
 [ $FAIL -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit $FAIL

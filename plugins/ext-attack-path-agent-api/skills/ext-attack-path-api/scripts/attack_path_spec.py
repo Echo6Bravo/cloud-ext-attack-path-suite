@@ -809,7 +809,7 @@ def _cli_plan(argv):
     Prints the plan_chunks() result as JSON for the shell driver to consume.
     """
     path=argv[0]; budget=int(argv[1]) if len(argv)>1 else ROWS_PER_RUN
-    data=json.load(open(path))
+    with open(path) as _f: data=json.load(_f)
     accounts={str(k):int(v) for k,v in (data.get("accounts") or {}).items()}
     regions=None
     if data.get("regions"):
