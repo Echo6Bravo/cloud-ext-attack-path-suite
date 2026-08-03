@@ -1,0 +1,39 @@
+name: CodeQL
+
+# Deep semantic SAST (dataflow/taint) for the Python code, on top of the ruff+bandit lint
+# gate in ci.yml. Free for public repos; results appear in the repo's Security tab.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"   # weekly, catches newly-published query rules against unchanged code
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: CodeQL analyze (python)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # required to upload results to the Security tab
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-and-quality
+          # The plugins/ trees are build.sh-synced copies of the root files; analyzing them
+          # would triple every finding. Analyze the single source of truth only. Path filters
+          # must be supplied via an inline config (not a top-level init input).
+          config: |
+            paths-ignore:
+              - plugins/**
+              - dist/**
+              - tests/**
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
