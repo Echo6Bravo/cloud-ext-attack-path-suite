@@ -94,8 +94,25 @@ Query the distinct accounts/tenants in scope by provider (from `EntityTenant` /
 the report header (accounts by cloud provider; "running, internet-direct VMs only").
 
 ### 3. Pull the three datasets
-Run each query in `references/udm-queries.md` via `udm_execute_query`, paginating fully
-(`skip`/`take`). Use `udm_get_query_results_count` for the population total first.
+**First, size the pull with `udm_get_query_results_count` on all three queries** (not just
+the population). This determines feasibility — see "Scaling" below. Then run each query in
+`references/udm-queries.md` via `udm_execute_query`, paginating fully (`skip`/`take`).
+
+> **⚠️ Scaling — read before pulling.** `udm_execute_query` returns a fixed page size and
+> MCP tool calls execute **only inside the model's context** (they can't be scripted or run
+> headless). Dataset C (CVE rows) dominates: even a ~100-VM lab returns ~1,800 C rows
+> (~90 pages). A large customer (10k–50k+ VMs) can produce hundreds of thousands of C rows
+> = thousands of pages, which will exhaust context / time out. **The count query tells you
+> which regime you're in:**
+> - **Small (C ≲ ~1,000 rows / ≲ ~50 pages):** paginate inline here in the MCP session.
+> - **Large:** do **not** paginate C inline. Either (a) **narrow scope** — run per-account
+>   or per-region by adding an `EntityTenant`/`EntityRegion` rule so each pull is small, and
+>   merge the resulting reports; or (b) use the **API-token edition's headless
+>   `fetch_all.sh`** (cursor-paginated, streams pages to disk with no model context) for the
+>   data pull, then assemble/render with the same shared code. Never silently truncate C —
+>   if you cap it, say so in the report.
+
+Use `udm_get_query_results_count` for the population total first.
 
 - **Population (query 01)** — count/validate the candidate VM population (gates 1–9 as a
   relation-filtered existence check). Sanity-check the count before pulling rows.
@@ -113,10 +130,15 @@ Run each query in `references/udm-queries.md` via `udm_execute_query`, paginatin
   instance Id** and carry it as `component` — the renderer's gate-8 post-filter needs it.
 
 ### 4. Assemble and render
-Write the raw match arrays to `assembled.json` as `{"A":[...],"B":[...],"C":[...]}` (and
-optionally `endpoint_ips.json`) in a working data directory. Then:
+Save each raw `udm_execute_query` response page as a file under a `raw/` directory
+(`raw_A_*.json`, `raw_B_*.json`, `raw_C_*.json`), then let the bundled assembler build
+`assembled.json` — it parses the raw MCP envelope, sets `privileged` from
+`EntityAttributes`, and parses `component` from the instance Id's 2nd path segment (so you
+don't hand-build the JSON):
 
 ```bash
+python3 scripts/assemble.py --raw ./data/raw --out ./data/assembled.json \
+    --endpoint-ips ./data/endpoint_ips.json
 python3 scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
     --out ./output/attack-paths-report.html
 ```
@@ -124,6 +146,14 @@ python3 scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
 The renderer applies `attack_path_spec.post_filter()` (gate 8 + a stopped-VM safety net),
 tiers by privilege, and writes the HTML. It contains **no** detection thresholds — it
 defers entirely to the spec.
+
+> **Scaling the output.** The renderer caps full per-host cards at `--max-cards` (default
+> 150) and CVE rows per host at `--max-cves-per-host` (default 25); hosts beyond the cap
+> roll into a compact, risk-ranked overflow table and the KPI/summary counts still reflect
+> the **true** totals. This keeps the HTML openable (~a few MB) even in a 50k-VM
+> environment — an uncapped render there would exceed 1 GB. `assemble.py --max-hosts N` can
+> additionally bound the host set before rendering. Raise/remove caps with `--max-cards 0`
+> for small environments where you want a full card per host.
 
 ### 5. Deliver
 Present the HTML report path and give a 2–3 sentence chat summary: the population size,

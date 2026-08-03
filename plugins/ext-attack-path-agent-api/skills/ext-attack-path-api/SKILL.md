@@ -83,8 +83,16 @@ Report the accounts/providers in scope from `VirtualMachine.Provider` / `Account
 capture the report date.
 
 ### 4. Pull the data (cursor-paginated)
-Use the concrete queries in `references/graphql-queries.md`. GraphQL connections paginate
-on `pageInfo.hasNextPage` / `endCursor` — loop, don't stop at the first page.
+**Preferred (scales headless):** run the bundled `scripts/fetch_all.sh`. It cursor-paginates
+both connections and streams each page to `data/raw/gql_*.json` with no model context —
+this is the path that scales to 50k+ VMs (a large tenant is just more pages of the same
+loop). Then `scripts/assemble_api.py --raw ./data/raw --out ./data/assembled.json` applies
+the reduced gates and writes the renderer's dataset. Set `PAGE` (default 500) and `RAW_DIR`
+via env. Verified live against `app.tenable.com/api/graph`.
+
+If pulling manually instead, use the concrete queries in `references/graphql-queries.md`.
+GraphQL connections paginate on `pageInfo.hasNextPage` / `endCursor` — loop, don't stop at
+the first page.
 
 - **Exposed VMs:** `VirtualMachines(first:100, after:$cursor)`, selecting
   `Name, Provider, AccountId, NetworkAccess { Inbound { Accesses { Type Scope } } }`.
@@ -99,17 +107,16 @@ on `pageInfo.hasNextPage` / `endCursor` — loop, don't stop at the first page.
   (gates 6 + reduced-9). Carry `Software.Name` as `component` (reduced gate 8).
 
 ### 5. Assemble and render (shared renderer)
-Map the kept rows into the renderer's dataset shape:
-`assembled.json = {"A":[inventory], "B":[endpoints], "C":[cve rows]}`. Because there is no
-observed endpoint (gate 4 dropped), populate **B** as empty per host (the renderer then
-shows no IP:port, which is correct — the API has none to show) and set each C row's
-`component` from `Software.Name`. Then:
+`assemble_api.py` (step 4) writes `assembled.json = {"A":[inventory], "B":[], "C":[cve rows]}`
+— **B** is intentionally empty (no observed endpoint; gate 4 dropped) and each C row's
+`component` comes from `Software.Name`. Then render:
 ```bash
 python3 ../../scripts/render_report.py --data ./data --date <YYYY-MM-DD> \
     --out ./output/attack-paths-report-api.html
 ```
 The renderer still applies its stopped-VM safety net and component post-filter; with no
-port data, gate 8 degrades to component display (as designed for this edition).
+port data, gate 8 degrades to component display (as designed for this edition). For large
+environments the same `--max-cards` / `--max-cves-per-host` caps apply (see MCP SKILL.md).
 
 ### 6. Deliver — and STATE THE FIDELITY GAP
 Present the report path and a 2–3 sentence summary. **Every API-edition report must

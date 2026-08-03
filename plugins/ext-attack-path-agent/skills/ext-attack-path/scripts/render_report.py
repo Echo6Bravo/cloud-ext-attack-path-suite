@@ -24,6 +24,14 @@ ap=argparse.ArgumentParser()
 ap.add_argument("--data",default=os.path.join(HERE,"data"),help="directory with assembled.json / endpoint_ips.json")
 ap.add_argument("--out", default=os.path.join(HERE,"output","attack-paths-report.html"))
 ap.add_argument("--date",default=datetime.date.today().isoformat(),help="report date (YYYY-MM-DD)")
+# --- scale controls: bound the rendered output for large environments ---
+# Full per-host cards (SVG diagram + CVE table) are expensive; beyond --max-cards hosts
+# the rest are rolled into a compact overflow table so the HTML stays openable. Ranking
+# (privileged, KEV, EPSS) means the highest-risk hosts always get full cards.
+ap.add_argument("--max-cards",type=int,default=150,
+                help="max full per-host cards to render (0 = unlimited). Extra hosts go to a summary table.")
+ap.add_argument("--max-cves-per-host",type=int,default=25,
+                help="max CVE rows shown per host table (0 = unlimited); extras collapse to 'N more'.")
 args=ap.parse_args()
 
 DATE=args.date
@@ -77,6 +85,13 @@ hostlist=list(hosts.values())
 for h in hostlist:
     h["anykev"]=any(c["kev"] for c in h["cves"]); h["maxepss"]=max(c["epss"] for c in h["cves"])
 hostlist.sort(key=lambda h:(h["privileged"],h["anykev"],h["maxepss"]),reverse=True)
+# Scale control: render full cards only for the top --max-cards hosts (already risk-ranked);
+# the remainder are summarized in a compact overflow table so the HTML stays openable in a
+# very large environment. 0 = unlimited (original behavior).
+overflow=[]
+if args.max_cards and len(hostlist)>args.max_cards:
+    overflow=hostlist[args.max_cards:]
+    hostlist=hostlist[:args.max_cards]
 tier1=[h for h in hostlist if h["privileged"]]
 tier2=[h for h in hostlist if not h["privileged"]]
 
@@ -310,13 +325,19 @@ def evidence_cell(c):
 
 def vtable(h,name):
     out=['<table class="vt"><tr><th>CVE</th><th>Yr</th><th>Exposed endpoint (IP:port)</th><th>Service</th><th>EPSS</th><th>CVSS</th><th>Sev</th><th>Evidence</th><th>Remediation</th></tr>']
-    for c in h["cves"]:
+    cves=h["cves"]; extra=0
+    if args.max_cves_per_host and len(cves)>args.max_cves_per_host:
+        extra=len(cves)-args.max_cves_per_host; cves=cves[:args.max_cves_per_host]
+    for c in cves:
         ip=ip_for(name,c["port"]); ipport=f'{ip}:{c["port"]}' if ip else f'(port {c["port"]})'
         out.append(f'<tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/{c["cve"]}" target="_blank">{c["cve"]}</a></td>'
           f'<td>{c["year"]}</td><td class="ipport">{esc(ipport)}</td><td>{svc_label(c["service"])}</td>'
           f'<td>{epss_pill(c["epss"])}</td><td>{cvss_pill(c["cvss"])}</td>'
           f'<td>{esc(c["severity"])}</td><td>{evidence_cell(c)}</td>'
           f'<td>{esc(rem(c["cve"]))}</td></tr>')
+    if extra:
+        out.append(f'<tr><td colspan="9" style="color:var(--mut);font-style:italic">'
+                   f'+ {extra} more qualifying CVE(s) on this host (showing top {args.max_cves_per_host} by EPSS/CVSS)</td></tr>')
     out.append("</table>");return "".join(out)
 
 def card(i,h):
@@ -332,7 +353,26 @@ def card(i,h):
       f'<div><b>Identity</b><br>{esc(", ".join(h["identity_ids"]) or "instance role")}</div></div>'
       +vtable(h,h["name"])+'</div>')
 
-n1p=len(tier1);n2p=len(tier2);nkev=sum(1 for h in hostlist if h["anykev"])
+def overflow_table(rows):
+    # Compact one-row-per-host summary for hosts beyond --max-cards (already risk-ranked).
+    if not rows: return ""
+    out=[f'<div class="tierband t2"><div class="tt">Additional qualifying hosts '
+         f'<span class="cnt">{len(rows)} more</span></div>'
+         f'<div class="ts">Beyond the top {args.max_cards} rendered in full above (ranked by privilege, then CISA-KEV, then EPSS). '
+         f'Re-run with <code>--max-cards 0</code> for a full card per host, or narrow scope by account.</div></div>',
+         '<table class="vt"><tr><th>#</th><th>Workload</th><th>Tier</th><th>Account</th><th>Max EPSS</th><th>KEV</th><th>Qual. CVEs</th></tr>']
+    for i,h in enumerate(rows):
+        out.append(f'<tr><td class="num">{args.max_cards+i+1}</td><td>{esc(h["name"])}</td>'
+          f'<td>{"Tier 1" if h["privileged"] else "Tier 2"}</td><td class="ipport">{esc(acct_kind(h["tenant"]))} {esc(h["tenant"])}</td>'
+          f'<td class="num">{h["maxepss"]*100:.0f}%</td><td>{"yes" if h["anykev"] else "—"}</td>'
+          f'<td class="num">{len(h["cves"])}</td></tr>')
+    out.append("</table>");return "".join(out)
+
+# Counts reflect the TRUE qualifying set (rendered cards + overflow), not just what got cards.
+allhosts=hostlist+overflow
+n1p=sum(1 for h in tier1);n2p=sum(1 for h in tier2)
+n1p_total=sum(1 for h in allhosts if h["privileged"]);n2p_total=sum(1 for h in allhosts if not h["privileged"])
+nkev=sum(1 for h in allhosts if h["anykev"])
 def accounts_block():
     order=["AWS","GCP","Azure","Other"]
     rows=[]
@@ -360,20 +400,20 @@ HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="
 </header>
 <div class="wrap">
 <div class="kpis">
-<div class="kpi red"><div class="n">{len(hostlist)}</div><div class="l">Confirmed attack-path hosts</div></div>
-<div class="kpi red"><div class="n">{n1p}</div><div class="l">Tier 1 &mdash; privileged</div></div>
-<div class="kpi"><div class="n">{n2p}</div><div class="l">Tier 2 &mdash; standard</div></div>
+<div class="kpi red"><div class="n">{len(allhosts)}</div><div class="l">Confirmed attack-path hosts</div></div>
+<div class="kpi red"><div class="n">{n1p_total}</div><div class="l">Tier 1 &mdash; privileged</div></div>
+<div class="kpi"><div class="n">{n2p_total}</div><div class="l">Tier 2 &mdash; standard</div></div>
 <div class="kpi"><div class="n">{nkev}</div><div class="l">On CISA KEV</div></div>
 </div>
 
 <div class="exec">
 <div class="exec-h">Executive Summary</div>
-<p>This assessment identifies <b>{len(hostlist)} running, internet-facing virtual machines</b> across <b>{len(accts)} cloud accounts</b> that expose a live network service carrying a serious, remotely exploitable vulnerability. Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and every vulnerability is exploitable over the network with no unusual conditions and carries independent public evidence of real-world risk (high exploitation probability [EPSS &ge; 30%] or confirmed exploitation on the CISA Known Exploited Vulnerabilities catalog).</p>
+<p>This assessment identifies <b>{len(allhosts)} running, internet-facing virtual machines</b> across <b>{len(accts)} cloud accounts</b> that expose a live network service carrying a serious, remotely exploitable vulnerability. Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and every vulnerability is exploitable over the network with no unusual conditions and carries independent public evidence of real-world risk (high exploitation probability [EPSS &ge; 30%] or confirmed exploitation on the CISA Known Exploited Vulnerabilities catalog).</p>
 <ul>
 <li><b>Findings are split into two tiers by identity privilege</b> &mdash; privilege is shown and tiered, not used to hide findings.
 <ul class="sublist worded">
-<li><span class="lbl">Tier 1</span><b>{n1p} hosts</b> run an identity flagged as having severe/administrative permissions [SeverePermissionActionPrincipalAttribute] &mdash; here a service compromise can escalate to broad cloud control, so these are the priority.</li>
-<li><span class="lbl">Tier 2</span><b>{n2p} hosts</b> are the same class of exposed, exploitable service on a standard-privilege identity &mdash; a real foothold, but contained blast radius.</li>
+<li><span class="lbl">Tier 1</span><b>{n1p_total} hosts</b> run an identity flagged as having severe/administrative permissions [SeverePermissionActionPrincipalAttribute] &mdash; here a service compromise can escalate to broad cloud control, so these are the priority.</li>
+<li><span class="lbl">Tier 2</span><b>{n2p_total} hosts</b> are the same class of exposed, exploitable service on a standard-privilege identity &mdash; a real foothold, but contained blast radius.</li>
 </ul></li>
 <li><b>The exposed attack surface is concentrated in a few internet-facing services</b> &mdash; principally OpenSSH, Apache/nginx web servers, and (where reachable over RDP) Windows. Local-only and client-side vulnerabilities were deliberately excluded because they cannot be reached over the exposed port.</li>
 <li><b>{nkev} host(s) carry a CISA-KEV vulnerability</b> (confirmed exploited in the wild) &mdash; the highest-urgency subset regardless of tier.</li>
@@ -408,13 +448,14 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 <b>Notes.</b> The published year shown per CVE is informational only and never affects inclusion; findings without a CVE identifier (e.g. distribution advisories) display a year of &ldquo;&mdash;&rdquo;. The stopped-instance exclusion is enforced at the query root and re-verified in post-processing so it cannot be inadvertently dropped. Because the threat-evidence gate relies on CVE-keyed public sources (EPSS and CISA KEV), findings without a CVE mapping are out of scope by design.</div>
 
 <hr class="tierdivider">
-<div class="tierband t1"><div class="tt">TIER 1 &mdash; Privileged Attack Paths <span class="cnt">{n1p} hosts</span></div>
+<div class="tierband t1"><div class="tt">TIER 1 &mdash; Privileged Attack Paths <span class="cnt">{n1p_total} hosts</span></div>
 <div class="ts">Internet-facing exploitable service on a workload whose identity holds severe/administrative permissions [SeverePermissionActionPrincipalAttribute]. A compromise here can escalate to broad cloud control &mdash; highest priority.</div></div>
 {cards1}
 <hr class="tierdivider">
-<div class="tierband t2"><div class="tt">TIER 2 &mdash; Additional Externally Exposed Workloads <span class="cnt">{n2p} hosts</span></div>
+<div class="tierband t2"><div class="tt">TIER 2 &mdash; Additional Externally Exposed Workloads <span class="cnt">{n2p_total} hosts</span></div>
 <div class="ts">Same class of exposed, exploitable service on a standard-privilege identity. A real foothold, but contained blast radius.</div></div>
 {cards2}
+{overflow_table(overflow)}
 </div>
 <footer>
 Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR CISA-KEV). Ranked by privilege tier, then CISA-KEV, then EPSS. Excluded {len(excluded)} CVE-rows in post-filter (non-listening component or unresolved port). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
@@ -422,6 +463,6 @@ Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed b
 os.makedirs(os.path.dirname(args.out),exist_ok=True)
 open(args.out,"w").write(HTML)
 print("wrote report:",args.out,"(",len(HTML),"bytes )")
-print("hosts:",len(hostlist),"| tier1:",n1p,"| tier2:",n2p,"| kev-hosts:",nkev,"| accounts:",len(accts))
+print("hosts:",len(allhosts),"(cards:",len(hostlist),"overflow:",len(overflow),") | tier1:",n1p_total,"| tier2:",n2p_total,"| kev-hosts:",nkev,"| accounts:",len(accts))
 print("post-filter excluded rows:",len(excluded))
 print("distinct CVEs in report:",len({c['cve'] for h in hostlist for c in h['cves']}))
