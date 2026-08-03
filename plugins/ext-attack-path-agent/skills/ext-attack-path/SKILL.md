@@ -33,7 +33,7 @@ must come from a query result.**
   `mcp__tcs__udm_get_query_results_count`.
   (In some environments the connector is namespaced differently, e.g.
   `mcp__tenablecs-<org>__udm_execute_query`. Use whichever `*_udm_*` tools are present.)
-- **Python 3.8+** (standard library only) to run the bundled spec and renderer.
+- **Python 3.7+** (standard library only, invoked as `python3`) to run the bundled spec and renderer.
 - The detection logic and renderer are bundled under `scripts/` in this skill:
   `attack_path_spec.py` (the single source of truth) and `render_report.py`.
 
