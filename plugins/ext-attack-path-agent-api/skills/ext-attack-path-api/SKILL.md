@@ -27,9 +27,10 @@ query result.**
 
 ## Prerequisites
 
-- `bash`, `curl`, and `jq`.
-- **Python 3.8+** (standard library only) for the bundled spec + renderer under
-  `scripts/` (`attack_path_spec.py`, `render_report.py`).
+- **bash 3.2+** (no bash-4 features), **curl** (any 7.x+; no `--fail-with-body` dependency),
+  **jq 1.5+**. All shell uses POSIX-portable flags (GNU and BSD/macOS).
+- **Python 3.7+** (standard library only) for the bundled spec + renderer under
+  `scripts/` (`attack_path_spec.py`, `render_report.py`, `assemble_api.py`).
 - Environment variables:
   - `TENABLE_CS_API_URL` — GraphQL endpoint (commercial default
     `https://app.tenable.com/api/graph`; confirm your region/platform in the console).
