@@ -11,11 +11,17 @@ on:
 jobs:
   python-matrix:
     name: Python ${{ matrix.python }} (stdlib-only suite)
-    runs-on: ubuntu-latest
+    # 3.7/3.8 are only provided by actions/setup-python on ubuntu-22.04, not 24.04.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.7", "3.8", "3.9", "3.11", "3.12"]
+        include:
+          - { python: "3.7", runner: "ubuntu-22.04" }
+          - { python: "3.8", runner: "ubuntu-22.04" }
+          - { python: "3.9", runner: "ubuntu-latest" }
+          - { python: "3.11", runner: "ubuntu-latest" }
+          - { python: "3.12", runner: "ubuntu-latest" }
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python }}
