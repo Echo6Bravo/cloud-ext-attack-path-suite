@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import uuid
 
 # ----------------------------------------------------------------------------
@@ -808,14 +809,39 @@ def _cli_plan(argv):
                 }  -- produced by running build_account_sizing_query() and tallying results.
     Prints the plan_chunks() result as JSON for the shell driver to consume.
     """
-    path=argv[0]; budget=int(argv[1]) if len(argv)>1 else ROWS_PER_RUN
-    with open(path) as _f: data=json.load(_f)
-    accounts={str(k):int(v) for k,v in (data.get("accounts") or {}).items()}
+    def _die(msg):
+        sys.stderr.write(f"attack_path_spec plan: ERROR: {msg}\n")
+        sys.stderr.write("usage: attack_path_spec.py plan <sizes.json> [budget] [--tsv]\n")
+        sys.exit(2)
+    if not argv or argv[0].startswith("-"):
+        _die("missing <sizes.json> path argument")
+    path=argv[0]
+    budget=ROWS_PER_RUN
+    if len(argv)>1 and not argv[1].startswith("-"):
+        try: budget=int(argv[1])
+        except ValueError: _die(f"budget must be an integer, got {argv[1]!r}")
+    try:
+        with open(path) as _f: data=json.load(_f)
+    except FileNotFoundError:
+        _die(f"sizes file not found: {path}")
+    except (OSError, ValueError) as e:
+        _die(f"cannot read/parse sizes file {path}: {e}")
+    if not isinstance(data, dict):
+        _die('sizes file must be a JSON object with an "accounts" key')
+    try:
+        accounts={str(k):int(v) for k,v in (data.get("accounts") or {}).items()}
+    except (TypeError, ValueError) as e:
+        _die(f'"accounts" values must be integers: {e}')
+    if not accounts:
+        _die('sizes file has no "accounts" entries')
     regions=None
     if data.get("regions"):
         regions={}
-        for k,v in data["regions"].items():
-            a,_,r=str(k).partition("|"); regions[(a,r)]=int(v)
+        try:
+            for k,v in data["regions"].items():
+                a,_,r=str(k).partition("|"); regions[(a,r)]=int(v)
+        except (AttributeError, TypeError, ValueError) as e:
+            _die(f'"regions" must map "<account>|<region>" -> integer: {e}')
     plan=plan_chunks(accounts,region_sizes=regions,budget=budget)
     plan["budget"]=budget; plan["total_rows"]=sum(accounts.values())
     if "--tsv" in argv:

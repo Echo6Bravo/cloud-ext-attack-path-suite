@@ -21,6 +21,11 @@ M1=$(python3 attack_path_spec.py plan /tmp/_sizes.json 20000 | python3 -c 'impor
 [ "$M1" = "tenant" ] && ok "plan -> tenant when it fits" || bad "plan tenant (got '$M1')"
 M2=$(python3 attack_path_spec.py plan /tmp/_sizes.json 4000 | python3 -c 'import json,sys;print(json.load(sys.stdin)["mode"])' 2>/dev/null)
 [ "$M2" = "region" ] && ok "plan -> region when an account is oversized" || bad "plan region (got '$M2')"
+# bad operator input fails cleanly (exit 2, no Python traceback) — dim-3 for the CLI itself
+PERR=$(python3 attack_path_spec.py plan /tmp/nonexistent-sizes.json 2>&1; echo "rc=$?")
+if echo "$PERR" | grep -q "rc=2" && ! echo "$PERR" | grep -q "Traceback"; then
+  ok "plan CLI fails cleanly on bad input (no traceback)"
+else bad "plan CLI bad-input handling: $PERR"; fi
 
 echo "== 3. assemble + render (MCP full-gate mode, synthetic sample) =="
 python3 render_report.py --data ./data/sample --out /tmp/_r.html >/dev/null 2>&1 \
