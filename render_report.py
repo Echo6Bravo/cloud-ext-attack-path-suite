@@ -58,20 +58,23 @@ for h in data["B"]: NAMEPORTS.setdefault(h["name"],set()).update(p["port"] for p
 # (the API/GraphQL edition has no observed listeners). Gate 8 then degrades to the
 # listening-component test only, and the report is bannered as reduced-fidelity.
 REDUCED = args.no_endpoint or (len(data["B"])==0 and len(data["C"])>0)
-paths=[]; excluded=[]
+paths=[]; review=[]; excluded=[]
 for m in data["C"]:
     iid=m["instance_id"]; host=A.get(iid)
     vp = PORTS.get(iid) or NAMEPORTS.get(m["name"]) or set()
-    keep,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
-    if not keep:
+    status,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
+    if status=="drop":
         excluded.append({**m,"reason":reason}); continue
     sk=spec.service_key(m["component"]); need=spec.SERVICE_PORTS.get(sk,set())
     port=sorted(vp & need)[0] if (vp & need) else None
-    paths.append({**m,"port":port,"service":sk,
-                  "privileged": host["privileged"] if host else False,
-                  "type": host["type"] if host else m.get("type"),
-                  "tenant": host["tenant"] if host else "",
-                  "identity_ids": host["identity_ids"] if host else []})
+    row={**m,"port":port,"service":sk,"pf_status":status,"pf_reason":reason,
+         "privileged": host["privileged"] if host else False,
+         "type": host["type"] if host else m.get("type"),
+         "tenant": host["tenant"] if host else "",
+         "identity_ids": host["identity_ids"] if host else []}
+    # 'review' = unmapped-but-exposed vulnerable component (anti-false-negative): surface it
+    # in a separate bucket rather than either confirming it as a path or silently dropping it.
+    (paths if status=="keep" else review).append(row)
 
 # group per host
 hosts={}
@@ -338,8 +341,10 @@ def vtable(h,name):
         extra=len(cves)-args.max_cves_per_host; cves=cves[:args.max_cves_per_host]
     for c in cves:
         ip=ip_for(name,c["port"]); ipport=f'{ip}:{c["port"]}' if ip else f'(port {c["port"]})'
-        out.append(f'<tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/{c["cve"]}" target="_blank">{c["cve"]}</a></td>'
-          f'<td>{c["year"]}</td><td class="ipport">{esc(ipport)}</td><td>{svc_label(c["service"])}</td>'
+        # cve is data-controlled: escape it for both the href attribute and the link text.
+        cve_e=esc(c["cve"])
+        out.append(f'<tr><td class="cve"><a href="https://nvd.nist.gov/vuln/detail/{cve_e}" target="_blank" rel="noopener noreferrer">{cve_e}</a></td>'
+          f'<td>{esc(c["year"])}</td><td class="ipport">{esc(ipport)}</td><td>{esc(svc_label(c["service"]))}</td>'
           f'<td>{epss_pill(c["epss"])}</td><td>{cvss_pill(c["cvss"])}</td>'
           f'<td>{esc(c["severity"])}</td><td>{evidence_cell(c)}</td>'
           f'<td>{esc(rem(c["cve"]))}</td></tr>')
@@ -374,6 +379,37 @@ def overflow_table(rows):
           f'<td>{"Tier 1" if h["privileged"] else "Tier 2"}</td><td class="ipport">{esc(acct_kind(h["tenant"]))} {esc(h["tenant"])}</td>'
           f'<td class="num">{h["maxepss"]*100:.0f}%</td><td>{"yes" if h["anykev"] else "—"}</td>'
           f'<td class="num">{len(h["cves"])}</td></tr>')
+    out.append("</table>");return "".join(out)
+
+def review_table(rows):
+    # Anti-false-negative bucket: exposed, exploitable vulns on components we could NOT map
+    # to a known service (or, in reduced mode, couldn't confirm a listening port). These are
+    # NOT silently dropped -- they are surfaced here for manual triage so a coverage gap in
+    # SERVICE_PORTS can never hide a real internet-facing path.
+    if not rows: return ""
+    # dedupe to one row per (host, component) to keep this compact
+    seen=set(); uniq=[]
+    for r in rows:
+        k=(r["name"], (r.get("component") or "").lower())
+        if k in seen: continue
+        seen.add(k); uniq.append(r)
+    out=[f'<hr class="tierdivider">',
+         f'<div class="tierband t2" style="border-left-color:var(--high)"><div class="tt">'
+         f'&#9888; Needs review &mdash; exposed vulnerable components not in the service map '
+         f'<span class="cnt" style="background:var(--high);color:#1a1200">{len(uniq)}</span></div>'
+         f'<div class="ts">These are open, network-exploitable, publicly-evidenced vulnerabilities on '
+         f'<b>internet-exposed hosts</b> whose software could not be automatically confirmed as a listening '
+         f'service (or, in reduced mode, whose port could not be observed). They are <b>not</b> confirmed '
+         f'attack paths and <b>not</b> dismissed &mdash; triage each: if the component is an internet-facing '
+         f'service, add it to <code>SERVICE_PORTS</code> and it will promote to a full finding next run.</div></div>',
+         '<table class="vt"><tr><th>Workload</th><th>Account</th><th>Component</th><th>CVE</th><th>EPSS</th><th>KEV</th><th>Why review</th></tr>']
+    for r in uniq:
+        out.append(f'<tr><td>{esc(r["name"])}</td>'
+          f'<td class="ipport">{esc(acct_kind(r["tenant"]))} {esc(r["tenant"])}</td>'
+          f'<td>{esc(r.get("component") or "?")}</td>'
+          f'<td class="cve"><a href="https://nvd.nist.gov/vuln/detail/{esc(r["cve"])}" target="_blank" rel="noopener noreferrer">{esc(r["cve"])}</a></td>'
+          f'<td class="num">{r.get("epss",0)*100:.0f}%</td><td>{"yes" if r.get("kev") else "—"}</td>'
+          f'<td style="color:var(--mut)">{esc(r.get("pf_reason","")[:90])}</td></tr>')
     out.append("</table>");return "".join(out)
 
 # Counts reflect the TRUE qualifying set (rendered cards + overflow), not just what got cards.
@@ -478,13 +514,14 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 <div class="ts">Same class of exposed, exploitable service on a standard-privilege identity. A real foothold, but contained blast radius.</div></div>
 {cards2}
 {overflow_table(overflow)}
+{review_table(review)}
 </div>
 <footer>
-Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR CISA-KEV). Ranked by privilege tier, then CISA-KEV, then EPSS. Excluded {len(excluded)} CVE-rows in post-filter (non-listening component or unresolved port). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
+Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR CISA-KEV). Ranked by privilege tier, then CISA-KEV, then EPSS. Post-filter: {len(excluded)} CVE-rows dropped (client/library/local component, stopped host, or listening-port not exposed); {len(review)} surfaced for review (exposed + exploitable but component not in the service map &mdash; never silently dropped). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
 </footer></body></html>"""
 os.makedirs(os.path.dirname(args.out),exist_ok=True)
 open(args.out,"w").write(HTML)
 print("wrote report:",args.out,"(",len(HTML),"bytes )")
 print("hosts:",len(allhosts),"(cards:",len(hostlist),"overflow:",len(overflow),") | tier1:",n1p_total,"| tier2:",n2p_total,"| kev-hosts:",nkev,"| accounts:",len(accts))
-print("post-filter excluded rows:",len(excluded))
+print("post-filter: dropped",len(excluded),"| surfaced-for-review",len(review),"(unmapped exposed components)")
 print("distinct CVEs in report:",len({c['cve'] for h in hostlist for c in h['cves']}))

@@ -93,8 +93,21 @@ plain-English description and the underlying attribute are shown together.
 
 Gate 8 is the anti-false-positive core: it uses a curated package → service → port map
 (`SERVICE_PORTS` in the spec) so, for example, an SSH-only host is a path only if it has a
-remote+PoC vulnerability *in the SSH server itself* — not in an installed-but-unexposed
+remote vulnerability *in the SSH server itself* — not in an installed-but-unexposed
 library.
+
+**Gate 8 never silently drops an exposed vulnerable service.** It is a three-way decision,
+not a keep/drop filter:
+- **keep** — a known listening service (SSH, web, DBs, Docker/k8s, mail/DNS/FTP, …) whose
+  port is observed exposed → a confirmed path.
+- **drop** — a client / library / local tool / OS component (curl, libgnutls, kernel,
+  `*-client` sub-packages) → correctly excluded as unreachable-over-the-port.
+- **review** — a vulnerable component that maps to *neither* a known service *nor* a known
+  non-service → **surfaced in a "Needs review" section**, never discarded. This is the
+  anti-false-**negative** safeguard: a coverage gap in `SERVICE_PORTS` (an in-house or
+  unusual daemon) can never hide a real internet-facing path — it surfaces for triage, and
+  adding it to `SERVICE_PORTS` promotes it to a full finding next run. Component matching is
+  token-boundary-aware, so names like `proprietary` don't false-match `tar`.
 
 ## What is deliberately excluded
 
@@ -359,6 +372,12 @@ the print stylesheet keeps the tool dependency-free and always in sync with the 
   file types and ad-hoc pull artifacts. Real cloud account IDs, hostnames, public IPs,
   service-account identifiers, and findings must stay out of version control.
 - Diagrams depict a *plausible* exploitation chain, not confirmed compromise.
+- **The HTML report is injection-safe.** Every value sourced from the environment (VM
+  names, identities, tenant IDs, components, CVE IDs, IP:port) is HTML-escaped before it
+  enters the report body or the inline SVG — a workload literally named
+  `<script>…</script>` renders as inert text. This is verified by an adversarial DOM-level
+  test in the CI suite (payloads in every field → asserts no event-handler attribute on any
+  element and no script execution).
 - Validate the environment's classification (prod vs. lab) before acting on findings or
   filing remediation tickets.
 

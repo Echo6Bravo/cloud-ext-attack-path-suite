@@ -395,54 +395,179 @@ def build_cve_query(account=None, region=None):
 # 4. Post-filter gates (deterministic, applied to query results) -- the safety net
 # ----------------------------------------------------------------------------
 # Package(component) -> the validated listening ports that make it internet-reachable.
+# This is a KEEP-list of known internet-facing services and their default listening ports.
+# Aliases (distro/version variants) are resolved to these keys by service_key().
+# IMPORTANT: this list is necessarily incomplete; a component that is NEITHER here NOR in
+# NON_LISTENING is NOT silently dropped -- it is surfaced for review (see post_filter).
 SERVICE_PORTS = {
+    # remote access
     "openssh-server":{22}, "openssh-sftp-server":{22},
+    # web / app servers
     "apache2":{80,443}, "httpd":{80,443}, "nginx":{80,443}, "tomcat":{80,443,8080},
-    "mysql-server":{3306}, "mariadb-server":{3306}, "grafana":{3000}, "redis-server":{6379},
-    "windows-os":{3389,445,135,139},
+    "haproxy":{80,443}, "lighttpd":{80,443}, "caddy":{80,443}, "envoy":{80,443,10000},
+    "php-fpm":{80,443}, "gunicorn":{80,443,8000}, "node":{80,443,3000,8080},
+    # databases / caches
+    "mysql-server":{3306}, "mariadb-server":{3306}, "postgresql":{5432},
+    "mongodb":{27017,27018}, "redis-server":{6379}, "memcached":{11211},
+    "elasticsearch":{9200,9300}, "opensearch":{9200,9300}, "cassandra":{9042},
+    "couchdb":{5984}, "influxdb":{8086}, "mssql-server":{1433}, "oracle-db":{1521},
+    # message queues / streaming
+    "rabbitmq-server":{5672,15672}, "kafka":{9092}, "activemq":{61616,8161},
+    # dirs / auth / mail / dns / ftp
+    "slapd":{389,636}, "bind":{53}, "named":{53}, "unbound":{53},
+    "postfix":{25,587,465}, "exim4":{25,587}, "sendmail":{25}, "dovecot":{110,143,993,995},
+    "vsftpd":{21}, "proftpd":{21}, "pure-ftpd":{21},
+    # infra / mgmt / observability (frequently exposed, high-value)
+    "docker":{2375,2376}, "dockerd":{2375,2376}, "kubelet":{10250}, "kube-apiserver":{6443},
+    "etcd":{2379,2380}, "consul":{8500}, "grafana":{3000}, "prometheus":{9090},
+    "kibana":{5601}, "jenkins":{8080}, "gitlab":{80,443}, "samba":{445,139},
+    # windows network services (RDP/SMB/RPC/WSUS/WinRM)
+    "windows-os":{3389,445,135,139,5985,5986,8530,8531},
 }
-# Components explicitly treated as NON-listening (client/local) -> never a live path.
-NON_LISTENING = ("kernel","linux-","sudo","glibc","libc","telnet","thunderbird","curl",
-                 "libcurl","bind9","libgnutls","openssl","libssl","-client","apt","python",
-                 "grub","cpio","coreutils","open-vm-tools","expat","sqlite")
+# Alias fragments -> canonical SERVICE_PORTS key. Matched as substrings (case-insensitive)
+# so distro/version variants resolve: 'postgresql-14' -> postgresql, 'mongodb-org-server' ->
+# mongodb, 'apache2-bin' -> apache2, 'openssh-server' -> openssh-server, etc.
+SERVICE_ALIASES = {
+    "openssh":"openssh-server", "sshd":"openssh-server",
+    "apache2":"apache2", "apache-":"httpd", "httpd":"httpd", "nginx":"nginx", "tomcat":"tomcat",
+    "haproxy":"haproxy", "lighttpd":"lighttpd", "caddy":"caddy", "envoy":"envoy",
+    "php-fpm":"php-fpm", "php7":"php-fpm", "php8":"php-fpm", "gunicorn":"gunicorn",
+    "nodejs":"node", "node-":"node",
+    "mysql":"mysql-server", "mariadb":"mariadb-server", "postgresql":"postgresql", "postgres":"postgresql",
+    "mongodb":"mongodb", "mongo-":"mongodb", "redis":"redis-server", "memcached":"memcached",
+    "elasticsearch":"elasticsearch", "opensearch":"opensearch", "cassandra":"cassandra",
+    "couchdb":"couchdb", "influxdb":"influxdb", "mssql":"mssql-server", "sqlserver":"mssql-server",
+    "rabbitmq":"rabbitmq-server", "kafka":"kafka", "activemq":"activemq",
+    "slapd":"slapd", "openldap":"slapd", "bind9":"bind", "bind-":"bind", "named":"named", "unbound":"unbound",
+    "postfix":"postfix", "exim":"exim4", "sendmail":"sendmail", "dovecot":"dovecot",
+    "vsftpd":"vsftpd", "proftpd":"proftpd", "pure-ftpd":"pure-ftpd",
+    "docker":"docker", "dockerd":"dockerd", "containerd":"docker",
+    "kubelet":"kubelet", "kube-apiserver":"kube-apiserver", "apiserver":"kube-apiserver",
+    "etcd":"etcd", "consul":"consul", "grafana":"grafana", "prometheus":"prometheus",
+    "kibana":"kibana", "jenkins":"jenkins", "gitlab":"gitlab", "samba":"samba", "smbd":"samba",
+    "windows":"windows-os",
+}
+# Components explicitly treated as NON-listening (client / library / local tool / OS
+# component) -> never a live network path, even on an exposed host. NOTE: entries must be
+# genuine non-services -- do NOT list server packages here (this is why 'bind9' was REMOVED:
+# bind9 is the BIND DNS *server*, now correctly in SERVICE_PORTS).
+NON_LISTENING = ("kernel","linux-","linux-image","linux-headers","sudo","glibc","libc6",
+                 "telnet-client","thunderbird","firefox","chromium","curl","wget",
+                 "libcurl","libgnutls","openssl","libssl","libxml","zlib","libpng","libjpeg",
+                 "-client","apt","dpkg","rpm","yum","dnf","python2","python3","perl","ruby",
+                 "grub","cpio","coreutils","util-linux","open-vm-tools","expat","sqlite",
+                 "tar","gzip","bzip2","xz-utils","bash","dash","tzdata","ca-certificates",
+                 "gnupg","less","vim","nano","git","binutils","gcc","make")
 
-def component_is_listening(pkg:str)->bool:
-    p=pkg.lower()
-    if p.startswith("windows"): return True   # Windows OS network services (RDP/SMB/RPC/WSUS)
-    if any(tok in p for tok in NON_LISTENING): return False
-    return any(p.startswith(k) or k in p for k in
-               ("openssh-server","openssh-sftp","apache2","httpd","nginx","tomcat",
-                "mysql-server","mariadb-server","grafana","redis-server"))
+def _tokens(p:str):
+    # split a package name into tokens on common separators so we match whole tokens, not
+    # substrings -- prevents 'tar' matching 'proprietary', 'git' matching 'digital', etc.
+    return set(re.split(r"[-_/.\s]+", p.lower()))
+
+def _tok_match(marker:str, toks:set)->bool:
+    """A marker matches a token if the token equals the marker OR starts with it (so 'libgnutls'
+    matches token 'libgnutls30', 'python' matches 'python3'). No middle-substring matches."""
+    return any(t==marker or t.startswith(marker) for t in toks)
+
+def _prefix_marker_match(marker:str, toks:set)->bool:
+    """For markers written with a trailing/leading '-' (e.g. 'node-', 'linux-', '-client'):
+    anchor to a TOKEN so 'node-' matches token 'node' but NOT 'anode'. Trailing '-foo' means
+    'a token equal to foo' (suffix sub-package); leading 'foo-' means 'a token starting foo'."""
+    core=marker.strip("-")
+    if marker.endswith("-"):      # e.g. 'linux-','mongo-','node-' : token == core or startswith core
+        return any(t==core or t.startswith(core) for t in toks)
+    if marker.startswith("-"):    # e.g. '-client' : some token equals the core
+        return core in toks
+    return False
+
+def _matches_nonlistening(p:str)->bool:
+    """True iff a NON_LISTENING marker matches on a token boundary. Markers with a leading/
+    trailing '-' keep bounded-substring semantics ('-client', 'linux-'); others match a whole
+    token or token-prefix. Rejects middle-substring false positives ('tar' in 'proprietary')."""
+    p=p.lower(); toks=_tokens(p)
+    for m in NON_LISTENING:
+        if m.startswith("-") or m.endswith("-"):
+            if _prefix_marker_match(m, toks): return True
+        elif _tok_match(m, toks):
+            return True
+    return False
 
 def service_key(pkg:str):
-    p=pkg.lower()
-    if p.startswith("openssh"): return "openssh-server"
-    if p.startswith("windows"): return "windows-os"   # 'Windows Server 2016/2019/2022', 'Windows OS', etc.
-    for k in ("apache2","httpd","nginx","tomcat","mysql-server","mariadb-server","grafana","redis-server"):
-        if k in p: return k
+    """Resolve a package/component name to a canonical SERVICE_PORTS key, or None if unknown.
+    Matches alias fragments on TOKEN boundaries (not raw substring) so 'node' does not match
+    'anode' etc. Fragments ending in '-' keep prefix semantics ('mongo-' matches 'mongo-tools')."""
+    p=(pkg or "").lower()
+    if p.startswith("windows"): return "windows-os"   # 'Windows Server 2016/2019/2022', 'Windows OS'
+    toks=_tokens(p)
+    # longest alias fragment first so 'openssh-server' beats a shorter match
+    for frag in sorted(SERVICE_ALIASES, key=len, reverse=True):
+        if frag.endswith("-"):
+            if _prefix_marker_match(frag, toks): return SERVICE_ALIASES[frag]  # e.g. 'mongo-','node-'
+        elif _tok_match(frag, toks):                         # whole token or token-prefix only
+            return SERVICE_ALIASES[frag]
     return None
 
-def post_filter(match, host_status:str, validated_ports:set, require_port:bool=True):
-    """Stage 1.1 re-check + Stage 3.4 component<->port correlation. Returns (kept, reason).
+def component_is_listening(pkg:str)->bool:
+    """True iff the component classifies as a known internet-facing service (respects the
+    non-service sub-package/library precedence, so 'openssh-client' is False)."""
+    return classify_component(pkg)[0]=="service"
 
-    require_port=True  (default, MCP edition): full gate 8 -- the component must be a
-        listening service AND an observed endpoint must expose one of its ports.
-    require_port=False (reduced/API edition, which has no observed endpoints): degrade
-        gate 8 to the listening-component test ONLY -- keep sshd/nginx/etc., still drop
-        clients/libs (Thunderbird, libgnutls, kernel, ...). This is weaker (it cannot
-        confirm the service is actually reachable on a port) and MUST be labeled reduced.
+# Sub-package suffixes that mean "not the running service" even when the name contains a
+# service token: e.g. 'openssh-client', 'postgresql-client', 'mysql-common', 'nginx-doc'.
+# These are client/support sub-packages, not the listening daemon.
+NONSERVICE_SUFFIXES = ("-client","-clients","-common","-doc","-dev","-devel","-libs","-lib",
+                       "-data","-utils","-dbg","-test","-docs")
+
+def classify_component(pkg:str):
+    """Return ('service'|'nonlistening'|'unknown', service_key_or_None). Single source for the
+    keep/drop/review decision so callers and self-tests share one taxonomy.
+
+    Order matters: an explicit non-service SUB-PACKAGE suffix (-client/-common/-doc/...) or a
+    known non-service token is checked BEFORE the service-alias match, so 'openssh-client'
+    and 'postgresql-client' are correctly non-listening rather than mistaken for their daemon."""
+    p=(pkg or "").lower()
+    if any(p.endswith(sfx) or (sfx+".") in p or (sfx+"-") in p for sfx in NONSERVICE_SUFFIXES):
+        return ("nonlistening", None)     # client/support sub-package, not the daemon
+    if _matches_nonlistening(p):          # known non-service (library/tool/OS component)
+        return ("nonlistening", None)
+    sk=service_key(p)
+    if sk is not None:                    # known listening service
+        return ("service", sk)
+    return ("unknown", None)              # neither -> must be surfaced, never silently dropped
+
+def post_filter(match, host_status:str, validated_ports:set, require_port:bool=True):
+    """Stage 1.1 re-check + Stage 3.4 component<->port correlation.
+    Returns (status, reason) where status is one of:
+      'keep'   -- a known listening service whose port is observed exposed (a real path).
+      'review' -- a vulnerable component we could NOT map to a known service or a known
+                  non-service: it must be SURFACED for manual review, never silently dropped
+                  (this is the anti-false-negative safeguard). Also used for a known service
+                  in reduced/no-port mode where reachability can't be confirmed.
+      'drop'   -- a known non-service (library/client/kernel/tool), a stopped host, or a
+                  known service whose listening port is NOT observed exposed.
+
+    require_port=True (MCP edition): full gate 8 (service AND observed port).
+    require_port=False (reduced/API edition, no observed endpoints): can't correlate ports,
+        so known services and unknowns both become 'review'; non-services still 'drop'.
+
+    Back-compat: bool(status=='keep') preserves the old truthy 'kept' meaning for callers
+    that do `if not keep`. Prefer checking the string.
     """
     if (host_status or "").lower()=="stopped":
-        return (False, "host is Stopped (post-filter safety net)")
-    sk=service_key(match["component"])
-    if sk is None or not component_is_listening(match["component"]):
-        return (False, f"component '{match['component']}' is not an internet-listening service")
+        return ("drop", "host is Stopped (post-filter safety net)")
+    kind, sk = classify_component(match.get("component"))
+    if kind=="nonlistening":
+        return ("drop", f"component '{match.get('component')}' is a client/library/local tool, not a network service")
+    if kind=="unknown":
+        return ("review", f"component '{match.get('component')}' is not in the known-service map "
+                          f"and not a known non-service -- SURFACED for manual review (possible coverage gap)")
+    # kind == "service"
     if not require_port:
-        return (True, f"listening component: {sk} (reduced: no observed-port correlation)")
+        return ("review", f"listening service '{sk}' but no observed-port data (reduced mode) -- reachability unconfirmed")
     need=SERVICE_PORTS.get(sk,set())
     if not (validated_ports & need):
-        return (False, f"service {sk} needs {sorted(need)}; host exposes {sorted(validated_ports)}")
-    return (True, f"reachable: {sk} on {sorted(validated_ports & need)}")
+        return ("drop", f"service {sk} listens on {sorted(need)} but host exposes {sorted(validated_ports)} -- not reachable")
+    return ("keep", f"reachable: {sk} on {sorted(validated_ports & need)}")
 
 # ----------------------------------------------------------------------------
 # 5. CVE-age proxy (fail-open: never excludes; only annotates / escalates)
@@ -475,22 +600,55 @@ def _selftests():
         elif isinstance(o,list):
             for v in o: walk(v)
     walk(q)
-    # component/port correlation behaves
-    assert component_is_listening("nginx-core") is True
-    assert component_is_listening("openssh-client") is False
-    assert component_is_listening("linux-modules-gcp") is False
-    assert component_is_listening("Windows Server 2016") is True    # regression guard
-    assert service_key("Windows Server 2022")=="windows-os"          # regression guard
-    assert post_filter({"component":"apache2"},"Running",{22})[0] is False   # apache needs 80/443
-    assert post_filter({"component":"apache2"},"Running",{80})[0] is True
-    assert post_filter({"component":"Windows Server 2016"},"Running",{3389})[0] is True  # RDP-exposed Windows
-    assert post_filter({"component":"Windows Server 2016"},"Running",{22})[0] is False   # no RDP => not reachable
-    assert post_filter({"component":"openssh-server"},"Stopped",{22})[0] is False
-    # reduced mode (require_port=False, API edition: no observed ports available):
-    assert post_filter({"component":"apache2"},"Running",set(),require_port=False)[0] is True   # listening-class kept w/o port
-    assert post_filter({"component":"thunderbird"},"Running",set(),require_port=False)[0] is False  # client still dropped
-    assert post_filter({"component":"libgnutls30"},"Running",set(),require_port=False)[0] is False  # lib still dropped
-    assert post_filter({"component":"apache2"},"Stopped",set(),require_port=False)[0] is False  # stopped net still enforced
+    # --- component/port correlation: three-way keep/review/drop contract ---
+    def pf(comp,ports,**kw): return post_filter({"component":comp},"Running",ports,**kw)[0]
+    # known services with their port observed -> keep
+    assert pf("nginx-core",{443})=="keep"
+    assert pf("apache2",{80})=="keep"
+    assert pf("Windows Server 2016",{3389})=="keep"          # regression guard (windows)
+    assert service_key("Windows Server 2022")=="windows-os"   # regression guard
+    # known service, WRONG port observed -> drop (not reachable), not review
+    assert pf("apache2",{22})=="drop"                         # apache needs 80/443
+    assert pf("Windows Server 2016",{22})=="drop"
+    # clients / libraries / local tools -> drop (correctly excluded, no noise)
+    assert pf("openssh-client",{22})=="drop"
+    assert pf("linux-modules-gcp",{22})=="drop"
+    assert pf("thunderbird",{443})=="drop"
+    assert pf("libgnutls30",{443})=="drop"
+    # stopped host -> drop regardless
+    assert post_filter({"component":"openssh-server"},"Stopped",{22})[0]=="drop"
+    # ANTI-FALSE-NEGATIVE regressions: previously-silently-dropped exposed services must now
+    # be KEPT (mapped) -- these are the exact gaps found in the coverage audit.
+    assert pf("postgresql-14",{5432})=="keep"
+    assert pf("mongodb-org-server",{27017})=="keep"
+    assert pf("redis-server",{6379})=="keep"
+    assert pf("elasticsearch",{9200})=="keep"
+    assert pf("docker-ce",{2375})=="keep"
+    assert pf("kubelet",{10250})=="keep"
+    assert pf("vsftpd",{21})=="keep"
+    assert pf("postfix",{25})=="keep"
+    assert pf("bind9",{53})=="keep"    # bind9 is the DNS SERVER -- was wrongly in NON_LISTENING
+    # unknown component on an exposed host -> REVIEW (surfaced, never silently dropped)
+    assert pf("some-inhouse-daemon",{8443})=="review"
+    assert pf("acme-proprietary-broker",{9999})=="review"
+    # reduced mode (require_port=False): services + unknowns -> review; non-services -> drop
+    assert pf("apache2",set(),require_port=False)=="review"       # can't confirm port
+    assert pf("some-inhouse-daemon",set(),require_port=False)=="review"
+    assert pf("thunderbird",set(),require_port=False)=="drop"      # client still dropped
+    assert post_filter({"component":"apache2"},"Stopped",set(),require_port=False)[0]=="drop"
+    # classify_component taxonomy is self-consistent
+    assert classify_component("nginx")[0]=="service"
+    assert classify_component("curl")[0]=="nonlistening"
+    assert classify_component("mystery-svc")[0]=="unknown"
+    # token-boundary matching: middle-substring must NOT false-match (regression guards for the
+    # bugs the coverage audit found -- 'tar' in 'proprietary', 'node' in 'anode', 'git' in 'digital')
+    assert classify_component("acme-proprietary-broker")[0]=="unknown"   # not 'tar'
+    assert classify_component("anode-agent")[0]=="unknown"               # not 'node'
+    assert classify_component("digital-signer")[0]=="unknown"            # not 'git'
+    assert classify_component("libgnutls30")[0]=="nonlistening"          # token-prefix still works
+    assert classify_component("python3")[0]=="nonlistening"
+    assert classify_component("postgresql-client")[0]=="nonlistening"    # -client sub-pkg, not daemon
+    assert classify_component("nodejs")==("service","node")              # real node still maps
     # age proxy fail-open
     assert age_label("CVE-2023-38408")[0]=="2023"
     assert age_label("DLS-2761-1")==("Unknown","")     # non-CVE: never filtered
