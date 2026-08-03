@@ -1,0 +1,186 @@
+"""
+assemble.py -- transform raw UDM query result pages into assembled.json.
+
+This closes the previously-undocumented seam between the raw MCP/UDM
+`udm_execute_query` result shape and the {"A","B","C"} structure render_report.py
+expects. It is written to SCALE: it streams a directory of per-page raw files
+rather than holding one giant blob, and dedupes with sets/dicts (no quadratic scans).
+
+Raw input: a directory containing page files named:
+    raw_A_*.json   inventory pages   (root IVirtualMachine)
+    raw_B_*.json   endpoint pages     (root NetworkEndpoint + Entity join)
+    raw_C_*.json   cve pages          (root PackageVulnerabilityInstanceModel + 2 joins)
+Each file is one raw `udm_execute_query` response (has a "resultsList" array).
+
+Usage:
+    python3 assemble.py --raw ./data/raw --out ./data/assembled.json \
+        [--endpoint-ips ./data/endpoint_ips.json] [--max-hosts N]
+
+Design notes for scale:
+  * O(|A|+|B|+|C|) overall -- every row touched once; joins via dicts/sets.
+  * Reads page files one at a time (constant extra memory beyond the accumulators).
+  * Emits only hosts that survive the endpoint+CVE join, so |assembled| tracks the
+    number of *qualifying* hosts, not the raw population.
+"""
+from __future__ import annotations
+import json, os, glob, argparse
+import attack_path_spec as spec
+
+SEVERE = spec.PRIVILEGE_ATTR  # "SeverePermissionActionPrincipalAttribute"
+
+
+def _rows(page):
+    """Yield each result's queryId->object map from one raw response."""
+    for r in page.get("resultsList", []):
+        yield r.get("queryIdToObjectMap", {})
+
+
+def _vmap(obj_for_query):
+    """Return the propertyIdentifierToValueMap for a single query object."""
+    return obj_for_query.get("propertyIdentifierToValueMap", {})
+
+
+def _first_map(qmap):
+    """Root object is the query whose map carries the root Id; return (root_map, all_maps)."""
+    maps = {qid: _vmap(o) for qid, o in qmap.items()}
+    return maps
+
+
+def load_inventory(raw_dir):
+    """A rows: one per host. instance_id = resource Id; privileged from EntityAttributes."""
+    A = {}
+    for f in sorted(glob.glob(os.path.join(raw_dir, "raw_A_*.json"))):
+        with open(f) as fh:
+            page = json.load(fh)
+        for qmap in _rows(page):
+            maps = _first_map(qmap)
+            # inventory is single-query; take the map that has an Id + EntityName
+            m = next((v for v in maps.values() if "Id" in v and "EntityName" in v), None)
+            if not m:
+                continue
+            iid = m["Id"]
+            attrs = m.get("EntityAttributes") or []
+            privileged = any((a or {}).get("typeName") == SEVERE for a in attrs)
+            A[iid] = {
+                "instance_id": iid,
+                "name": m.get("EntityName", ""),
+                "type": m.get("EntityTypeName", ""),
+                "tenant": m.get("EntityTenant", ""),
+                "status": m.get("VirtualMachineStatus", ""),
+                "privileged": privileged,
+                "identity_ids": list(m.get("OriginatorEntityServiceIdentities") or []),
+            }
+    return A
+
+
+def load_endpoints(raw_dir):
+    """B rows: dedupe to {instance_id, name, ports:[{port,protocol}]}. Also return ip map."""
+    ports_by_iid = {}     # iid -> set((port, proto))
+    name_by_iid = {}
+    ips = []              # {name, ip, port, protocol}
+    for f in sorted(glob.glob(os.path.join(raw_dir, "raw_B_*.json"))):
+        with open(f) as fh:
+            page = json.load(fh)
+        for qmap in _rows(page):
+            maps = _first_map(qmap)
+            ep = next((v for v in maps.values() if "NetworkEndpointPort" in v), None)
+            ent = next((v for v in maps.values() if "EntityName" in v and "NetworkEndpointPort" not in v), None)
+            if not ep or not ent:
+                continue
+            iid = ent.get("Id")
+            if not iid:
+                continue
+            port = ep.get("NetworkEndpointPort")
+            proto = ep.get("NetworkEndpointProtocolType", "TCP")
+            host = ep.get("NetworkEndpointHost")
+            name_by_iid[iid] = ent.get("EntityName", "")
+            ports_by_iid.setdefault(iid, set()).add((port, proto))
+            if host is not None:
+                ips.append({"name": ent.get("EntityName", ""), "ip": host, "port": port, "protocol": proto})
+    B = [
+        {"instance_id": iid, "name": name_by_iid.get(iid, ""),
+         "ports": [{"port": p, "protocol": pr} for (p, pr) in sorted(ports, key=lambda x: (x[0] or 0))]}
+        for iid, ports in ports_by_iid.items()
+    ]
+    return B, ips
+
+
+def _gate_reason(epss, kev):
+    hit_epss = (epss is not None) and (epss >= spec.EPSS_FLOOR)
+    if hit_epss and kev:
+        return "both"
+    if kev:
+        return "kev"
+    return "epss"
+
+
+def load_cves(raw_dir):
+    """C rows: one per (host, cve). component = 2nd path segment of the instance Id."""
+    C = []
+    for f in sorted(glob.glob(os.path.join(raw_dir, "raw_C_*.json"))):
+        with open(f) as fh:
+            page = json.load(fh)
+        for qmap in _rows(page):
+            maps = _first_map(qmap)
+            inst = next((v for v in maps.values() if "PackageVulnerabilityInstanceStatus" in v), None)
+            vuln = next((v for v in maps.values() if "VulnerabilityEpssScore" in v), None)
+            ent = next((v for v in maps.values() if "EntityName" in v), None)
+            if not inst or not vuln or not ent:
+                continue
+            inst_id = inst.get("Id", "")
+            segs = inst_id.split("/")
+            component = segs[1] if len(segs) > 1 else ""
+            cve = (vuln.get("Id") or (segs[0] if segs else "")).upper()
+            iid = ent.get("Id")
+            epss = vuln.get("VulnerabilityEpssScore")
+            kev = bool(vuln.get("VulnerabilityVprV2MetricsOnCisaKev"))
+            C.append({
+                "instance_id": iid,
+                "name": ent.get("EntityName", ""),
+                "type": ent.get("EntityTypeName", ""),
+                "cve": cve,
+                "component": component,
+                "cvss": vuln.get("VulnerabilityCvssScore") or 0,
+                "epss": epss if epss is not None else 0,
+                "kev": kev,
+                "severity": vuln.get("VulnerabilitySeverity", ""),
+                "poc": bool(vuln.get("VulnerabilityProofOfConceptAvailable")),
+                "gate_reason": _gate_reason(epss, kev),
+                "status": inst.get("PackageVulnerabilityInstanceStatus", "Open"),
+            })
+    return C
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--raw", default="./data/raw")
+    ap.add_argument("--out", default="./data/assembled.json")
+    ap.add_argument("--endpoint-ips", default=None, help="also write endpoint_ips.json here")
+    ap.add_argument("--max-hosts", type=int, default=0,
+                    help="0 = no cap; else keep only the N hosts with the most qualifying CVEs (safety valve for huge envs)")
+    args = ap.parse_args()
+
+    A = load_inventory(args.raw)
+    B, ips = load_endpoints(args.raw)
+    C = load_cves(args.raw)
+
+    # Optional safety valve: bound the rendered host set for very large environments.
+    if args.max_hosts and args.max_hosts > 0:
+        from collections import Counter
+        by_host = Counter(c["instance_id"] for c in C)
+        keep = {iid for iid, _ in by_host.most_common(args.max_hosts)}
+        C = [c for c in C if c["instance_id"] in keep]
+
+    out = {"A": list(A.values()), "B": B, "C": C}
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    with open(args.out, "w") as fh:
+        json.dump(out, fh)
+    print(f"assembled: A={len(out['A'])} hosts | B={len(out['B'])} endpoint-hosts | C={len(out['C'])} cve-rows")
+    if args.endpoint_ips and ips:
+        with open(args.endpoint_ips, "w") as fh:
+            json.dump({"endpoints": ips}, fh)
+        print(f"wrote endpoint_ips: {len(ips)} ip:port rows -> {args.endpoint_ips}")
+
+
+if __name__ == "__main__":
+    main()

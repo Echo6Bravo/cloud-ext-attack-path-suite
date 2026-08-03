@@ -213,6 +213,27 @@ prior day.
 points to it via the Exchange's `/cyberagents-exchange-submit` flow or a PR to
 [`tenable/cyberagents-exchange`](https://github.com/tenable/cyberagents-exchange).
 
+## Scaling to large environments
+
+The local Python (spec, `assemble.py`, `render_report.py`) is linear/dict-joined and
+scales fine; the two limits in a very large environment (10k–50k+ VMs) are the **data
+pull** and the **output size**, both addressed:
+
+- **Data pull.** The qualifying-CVE dataset dominates (a ~100-VM lab already yields ~1,800
+  rows). MCP `udm_execute_query` calls run **only inside the model context** and can't be
+  scripted, so paginating hundreds of thousands of rows inline is infeasible. Always run
+  the **count** queries first (`udm_get_query_results_count`) to size the pull. For large
+  tenants: either **narrow scope** (per-account/region rule → merge reports) or use the
+  API edition's **headless `fetch_all.sh`**, which cursor-paginates and streams each page
+  to disk with no model context (verified live), then feed the pages to `assemble_api.py`
+  and the shared renderer.
+- **Output size.** `render_report.py` caps full per-host cards (`--max-cards`, default 150)
+  and CVE rows per host (`--max-cves-per-host`, default 25); overflow hosts roll into a
+  compact risk-ranked table while KPI/summary counts stay true to the full set. Measured:
+  a 500-host × 20k-CVE render is ~2.4 MB capped vs. ~11 MB uncapped — and an uncapped 50k
+  render would exceed **1 GB** (unopenable). `assemble.py --max-hosts N` bounds the set
+  earlier still.
+
 ## Requirements
 
 - **Python 3.8+** (standard library only — no third-party packages).
