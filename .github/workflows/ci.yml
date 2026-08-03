@@ -60,3 +60,23 @@ jobs:
           find . -name '*.sh' -not -path './dist/*' -print0 \
             | xargs -0 shellcheck -S warning -e SC1090,SC1091 || true
           echo "shellcheck advisory run complete"
+
+  secret-scan:
+    name: Secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 pulls the ENTIRE history so a committed-then-deleted secret is caught,
+      # not just the current tree. This is the unskippable third layer behind the PreToolUse
+      # hook (pre-command) and quality-review (pre-submission).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          VER=8.30.1
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan full git history
+        # non-zero exit if any leak is found -> fails the build (no --exit-code override).
+        run: gitleaks git --no-banner --redact .
