@@ -84,3 +84,7 @@ Thumbs.db
 
 # Personal Claude Code overrides (not team-wide)
 .claude/settings.local.json
+
+# committed, self-contained sample report (synthetic RFC-5737 data only)
+!/examples/
+!/examples/*.html

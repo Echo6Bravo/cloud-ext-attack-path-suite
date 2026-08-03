@@ -39,6 +39,21 @@ through model context); the API edition's shell pull scales to any size. See *Sc
 
 ---
 
+## Sample report
+
+See exactly what the suite produces before pointing it at your own tenant. The report
+below is rendered from a checked-in **synthetic** fixture (all IPs are
+[RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) documentation ranges; all
+accounts, roles, and hostnames are fabricated).
+
+[![Sample attack-path report](examples/sample-report-hero.png)](examples/sample-report.html)
+
+**→ [Open the full rendered report](examples/sample-report.html)** (self-contained HTML) ·
+[full-page screenshot](examples/sample-report.png) ·
+[how it was generated](examples/README.md)
+
+---
+
 ## Table of contents
 - [Highlights](#highlights)
 - [How a finding qualifies](#how-a-finding-qualifies)
