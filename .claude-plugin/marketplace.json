@@ -16,7 +16,7 @@
     {
       "name": "ext-attack-path-agent-api",
       "source": "./plugins/ext-attack-path-agent-api",
-      "description": "API-token edition. Runs the same external attack-path sweep via the Tenable Cloud Security public GraphQL API with a Bearer token and no MCP connector, for headless/scheduled use. Produces the same two-tier HTML attack-path report.",
+      "description": "API-token edition (reduced fidelity). Runs via the Tenable Cloud Security public GraphQL API with a Bearer token and no MCP connector, for headless/scheduled use. Enforces the subset of the detection contract the GraphQL API can express (internet-direct + wide/all exposure, open + AV:N + EPSS/exploit-maturity); it cannot confirm running-state, an observed listening endpoint, AC:Low, CISA-KEV, or privilege, so it produces a candidate list and states the gap in every report. Use the MCP edition for the authoritative list.",
       "keywords": ["cloud-security", "tenable", "attack-path", "graphql", "api-token", "headless", "cnapp", "epss"]
     }
   ]

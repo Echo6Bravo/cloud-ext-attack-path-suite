@@ -15,15 +15,25 @@ vulnerability dump.
 > deliberately conservative about what counts, so findings are defensible to an owner.
 
 It ships as a **Claude Code plugin marketplace with two agent editions** that share one
-self-testing detection spec and one report renderer, so their findings are identical by
-construction:
+self-testing detection spec and one report renderer:
 
 - **`ext-attack-path-agent` (MCP edition)** — runs through the Tenable Cloud Security
-  (`tcs`) MCP connector's Explore/UDM tools. Richest results.
-- **`ext-attack-path-agent-api` (API-token edition)** — runs through the public GraphQL
-  API with a Bearer token and **no MCP connector**. Built for headless daily runs.
+  (`tcs`) MCP connector's Explore/UDM tools. Enforces the **full** detection contract
+  below. Richest, authoritative results. *Verified end-to-end against a live tenant.*
+- **`ext-attack-path-agent-api` (API-token edition, reduced fidelity)** — runs through the
+  public GraphQL API with a Bearer token and **no MCP connector**, for headless daily
+  runs. The GraphQL API exposes fewer signals, so this edition enforces a **subset** of the
+  contract (internet-direct + wide/all exposure, open + AV:N + EPSS/exploit-maturity) and
+  **cannot** confirm running-state, an observed listening endpoint, AC:Low, CISA-KEV
+  membership, or workload privilege. It produces a **candidate list** and states the gap in
+  every report. See that plugin's README for the verified gate-by-gate mapping.
 
 Either edition can run as a scheduled **daily agent** and report the day-over-day delta.
+
+> **Fidelity note.** The two editions do **not** produce identical findings — the MCP
+> edition is authoritative; the API edition is a lower-fidelity fallback for environments
+> without the MCP connector. Both mappings were validated against a live Tenable Cloud
+> Security tenant.
 
 ---
 
@@ -177,9 +187,11 @@ pick by how you connect to Tenable Cloud Security.
 | | MCP edition (`ext-attack-path`) | API-token edition (`ext-attack-path-api`) |
 |---|---|---|
 | **Connects via** | `tcs` MCP connector (Explore/UDM) | Public GraphQL API + Bearer token |
-| **Best for** | Interactive / richest results | Headless, unattended daily cron |
-| **Data pull** | `udm_execute_query` (paginated) | GraphQL cursor pagination (introspect first) |
+| **Fidelity** | **Full** contract (authoritative) | **Reduced** subset — candidate list (see plugin README) |
+| **Best for** | Authoritative, de-noised results | Headless daily cron where no MCP connector exists |
+| **Data pull** | `udm_execute_query` (paginated) | GraphQL cursor pagination |
 | **Extra setup** | MCP connector configured | `TENABLE_CS_API_URL`, `TENABLE_CS_API_TOKEN` |
+| **Verified** | End-to-end vs. live tenant | Queries verified vs. live schema |
 
 **Install locally (either edition):**
 
