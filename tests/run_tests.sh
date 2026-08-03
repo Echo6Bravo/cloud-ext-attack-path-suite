@@ -66,6 +66,28 @@ PY
 )
 [ "$G4" = "Y" ] && ok "gate-4: no-endpoint host excluded from keep/review" || bad "gate-4 endpoint requirement leak (got '$G4')"
 
+echo "== 4c. review table shows the exposed IP:port (so customers can locate the source) =="
+# The 'Needs review' bucket must surface the host's observed endpoint, not just the component.
+RC=$(python3 - <<'PY'
+import json,subprocess,tempfile,os,sys
+d=tempfile.mkdtemp()
+A=[{"instance_id":"h1","name":"reviewhost","type":"AwsEc2Instance","tenant":"t","status":"Running","privileged":False,"identity_ids":[]}]
+B=[{"instance_id":"h1","name":"reviewhost","ports":[{"port":6379,"protocol":"TCP"}]}]
+# unmapped component 'somelib' on an EXPOSED host -> lands in review
+C=[{"instance_id":"h1","name":"reviewhost","type":"AwsEc2Instance","cve":"CVE-2025-9999","component":"somelib","cvss":9.8,"epss":0.9,"kev":False,"severity":"High","poc":True,"gate_reason":"epss","status":"Open"}]
+ips={"endpoints":[{"name":"reviewhost","ip":"203.0.113.77","port":6379,"protocol":"TCP"}]}
+json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
+json.dump(ips,open(os.path.join(d,"endpoint_ips.json"),"w"))
+out=os.path.join(d,"r.html")
+subprocess.run([sys.executable,"render_report.py","--data",d,"--out",out],capture_output=True,text=True)
+html=open(out).read()
+seg=html.split("Needs review")[1] if "Needs review" in html else ""
+# the review section must carry the endpoint header AND the actual IP:port for the host
+print("Y" if ("Exposed endpoint(s) (IP:port)" in html and "203.0.113.77:6379" in seg) else "N")
+PY
+)
+[ "$RC" = "Y" ] && ok "review table shows exposed IP:port" || bad "review table missing endpoint (got '$RC')"
+
 echo "== 5. GraphQL caller HTTP handling (local mock; proves portability w/o a token) =="
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   CALLER="plugins/ext-attack-path-agent-api/skills/ext-attack-path-api/scripts/tcs_graphql.sh"
