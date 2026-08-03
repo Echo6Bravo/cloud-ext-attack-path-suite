@@ -81,3 +81,6 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# Personal Claude Code overrides (not team-wide)
+.claude/settings.local.json
