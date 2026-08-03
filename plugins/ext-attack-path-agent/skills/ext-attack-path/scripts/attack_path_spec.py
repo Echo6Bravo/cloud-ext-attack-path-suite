@@ -22,7 +22,10 @@ Run:  python3 attack_path_spec.py        # runs self-tests, prints the query JSO
 """
 
 from __future__ import annotations
-import json, re, uuid
+
+import json
+import re
+import uuid
 
 # ----------------------------------------------------------------------------
 # 0. Enforced invariants (the things that MUST never regress)
@@ -281,7 +284,7 @@ def plan_chunks(account_sizes, region_sizes=None, budget=ROWS_PER_RUN):
         if not region_sizes:
             oversized.append({"account":a,"count":c,"why":"account over budget; no region_sizes provided to split"})
             chunks.append({"account":a}); continue
-        for (ra,region),rc in sorted(((k,v) for k,v in region_sizes.items() if k[0]==a),key=lambda kv:-kv[1]):
+        for (_ra,region),rc in sorted(((k,v) for k,v in region_sizes.items() if k[0]==a),key=lambda kv:-kv[1]):
             chunks.append({"account":a,"region":region})
             if rc>budget:
                 oversized.append({"account":a,"region":region,"count":rc,

@@ -7,7 +7,7 @@
 # Usage:  bash tests/run_tests.sh
 # Exit 0 = all passed. Used by CI (.github/workflows/ci.yml) across a Python matrix.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || { echo "cannot cd to repo root" >&2; exit 1; }
 FAIL=0
 ok(){ echo "  [PASS] $1"; }
 bad(){ echo "  [FAIL] $1"; FAIL=1; }

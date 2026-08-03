@@ -1,0 +1,21 @@
+# Ruff config — high-signal lint for a stdlib-only codebase.
+# We enable the rule families that catch real bugs/quality issues (pyflakes, bugbear,
+# comprehensions, isort, pyupgrade) and deliberately IGNORE stylistic rules that would
+# churn intentional, correct code. Every ignore is justified so the lint stays meaningful.
+target-version = "py37"          # documented runtime floor
+extend-exclude = ["dist", "plugins/*/skills/*/scripts"]  # plugins/ are build.sh-synced copies of the root files
+
+[lint]
+select = ["F", "E", "W", "I", "B", "C4", "UP", "SIM"]
+ignore = [
+  "E501",     # line length — the report renderer has long, readable f-strings by design
+  "E701",     # multiple statements on one line (colon) — the spec uses compact one-liners intentionally
+  "E702",     # multiple statements on one line (semicolon) — same deliberate compact style throughout
+  "E731",     # lambda assignment — used sparingly for tiny local helpers
+  "SIM115",   # "use a context manager" — flagged on deliberate one-shot open().write() at exit; harmless
+  "SIM105",   # contextlib.suppress — try/except/continue reads clearer in the page loaders
+  "UP015",    # redundant open mode — explicit "w" is clearer
+]
+
+[lint.isort]
+known-first-party = ["attack_path_spec"]

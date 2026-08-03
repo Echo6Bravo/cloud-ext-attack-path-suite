@@ -23,13 +23,17 @@ Design notes for scale:
     number of *qualifying* hosts, not the raw population.
 """
 from __future__ import annotations
-import json, os, glob, argparse
+
+import argparse
+import glob
+import json
+import os
+import sys
+
 import attack_path_spec as spec
 
 SEVERE = spec.PRIVILEGE_ATTR  # "SeverePermissionActionPrincipalAttribute"
 
-
-import sys
 
 def _load_pages(raw_dir, prefix):
     """Yield parsed page dicts for raw_<prefix>_*.json, skipping unreadable/malformed pages
