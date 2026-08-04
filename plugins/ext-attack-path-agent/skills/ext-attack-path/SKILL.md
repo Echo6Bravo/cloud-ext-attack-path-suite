@@ -226,12 +226,23 @@ What it does, all automatically (no hand-authored `sizes.json`, no manual per-ac
    `total ≤ budget` → **one tenant run**; every account `≤ budget` → **one run per account**;
    an account `> budget` → **split by region**; a region still over → reported `oversized`
    (**never silently truncated**). It then shows the plan and **asks before spawning N sessions**.
-4. **Pull per chunk, scoped.** `build_*(account=,region=)` scope each chunk by filtering the
-   tenant's `Id` via an `EntityTenant` relation rule (cross-provider — NOT `EntityProviderRawId`,
-   which is AWS-only). Each session writes scope-tagged raw pages to a shared `data/raw/`.
+4. **Pull per chunk, scoped.** The orchestrator PRE-GENERATES the three scoped query JSONs
+   (`build_*(account=,region=)`, filtering the tenant's `Id` via an `EntityTenant` relation rule —
+   cross-provider, NOT `EntityProviderRawId` which is AWS-only) and hands them to each headless
+   session, which only executes them via the MCP tool and writes scope-tagged raw pages to a
+   shared `data/raw/`. A non-interactive `claude -p` can't approve permission prompts, so each is
+   launched with `--add-dir <data>` + `--permission-mode acceptEdits` and pre-generated queries
+   (so the sub-agent needs no `python3`/Bash approval — verified live: without this it stalls).
 5. **Merge + render once.** `assemble.py` globs all `raw_*` pages, dedupes by `instance_id`;
    `render_report.py` writes one report. Partial-failure tolerant: a failed chunk is flagged in a
    coverage-gap note and the run exits 3 (report produced but incomplete), never a silent partial.
+
+**⏱ Speed (verified live — plan for it).** Each headless session is **slow** — a single small
+account (tens of CVE rows) took ~8 min end-to-end in testing, far slower than interactive MCP
+calls. So a per-account fan-out over a large tenant is an **hours-long unattended job** (roughly
+N × several minutes). Run it detached (`--yes`, backgrounded/scheduled), not interactively. If you
+need fast, unattended, truly-large-scale pulls, the **API edition's headless shell pull is the
+right tool** (reduced fidelity) — the MCP fan-out trades speed for keeping every gate intact.
 
 **Scope note / honest ceiling:** this scales to the size of the **largest single chunk** (one
 region of one account) that must still fit one context — "much more scalable, not unbounded," and

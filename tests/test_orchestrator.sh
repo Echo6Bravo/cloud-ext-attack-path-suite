@@ -20,7 +20,9 @@ cp "$MOCK_SRC" "$BIN/claude"; chmod +x "$BIN/claude"
 
 DATA="$WORK/data"
 export MOCK_RAW_DIR="$DATA/raw" MOCK_SIZES="$DATA/sizes.json"
+export MOCK_ARGV_LOG="$WORK/argv.log"   # mock records every -p invocation's argv here
 mkdir -p "$MOCK_RAW_DIR"
+: > "$MOCK_ARGV_LOG"
 REPORT="$ROOT/output/attack-paths-report-2026-08-03.html"
 
 check_merged_report(){ # $1 = label
@@ -40,6 +42,15 @@ echo "$OUT" | grep -q "auto-detected UDM connector: tenablecs-org1" && ok "tenan
 echo "$OUT" | grep -Eq "mode=tenant .*chunks=1" && ok "tenant: single-session plan" || bad "tenant: expected mode=tenant chunks=1"
 [ -f "$REPORT" ] && ok "tenant: report rendered" || bad "tenant: no report"
 [ -f "$REPORT" ] && check_merged_report "tenant"
+# headless-permission fix: every claude -p call must carry --add-dir + acceptEdits (else a real
+# non-interactive session stalls on unapproved writes/tools -- the live bug this guards).
+if grep -q -- "--add-dir" "$MOCK_ARGV_LOG" && grep -q -- "--permission-mode acceptEdits" "$MOCK_ARGV_LOG"; then
+  ok "tenant: headless permission flags passed to claude"
+else bad "tenant: missing --add-dir/--permission-mode (headless would stall)"; fi
+# pre-generated query files must exist (the mock exits 7 if not; here assert directly too)
+ls "$DATA"/raw/_queries_tenant/A.json "$DATA"/raw/_queries_tenant/C.json >/dev/null 2>&1 \
+  && ok "tenant: scoped queries pre-generated (no sub-agent code execution needed)" \
+  || bad "tenant: query files not pre-generated"
 
 echo "== B) per-account fan-out (tiny budget -> one session PER account) =="
 rm -f "$REPORT"; rm -rf "$DATA/raw"; mkdir -p "$DATA/raw"

@@ -13,6 +13,11 @@ if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "list" ]; then
   exit 0
 fi
 
+# Record the full argv of every -p invocation so the test can assert the headless-permission
+# flags (--add-dir, --permission-mode acceptEdits) actually reach `claude` -- without them a real
+# headless session stalls on unapproved writes/tools (the live bug this guards).
+[ -n "${MOCK_ARGV_LOG:-}" ] && printf '%s\n' "$*" >> "$MOCK_ARGV_LOG"
+
 prompt=""
 while [ $# -gt 0 ]; do [ "$1" = "-p" ] && prompt="${2:-}"; shift; done
 
@@ -34,11 +39,24 @@ emit_azure() { # $1 = filename tag
   printf '{"resultsList":[{"queryIdToObjectMap":{"s":{"queryId":"s","propertyIdentifierToValueMap":{"PackageVulnerabilityInstanceStatus":"Open","Id":"cve-2025-0002/openssh/x/Linux/%s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/azh"}},"v":{"queryId":"v","propertyIdentifierToValueMap":{"VulnerabilityCvssScore":9.1,"VulnerabilityEpssScore":0.8,"VulnerabilityVprV2MetricsOnCisaKev":false,"VulnerabilitySeverity":"High","VulnerabilityProofOfConceptAvailable":true,"Id":"cve-2025-0002"}},"n":{"queryId":"n","propertyIdentifierToValueMap":{"EntityName":"az-host","EntityTypeName":"AzureComputeVirtualMachine","Id":"%s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/azh"}}}}]}' "$AZ" "$AZ" > "$RAW/raw_C_${t}_paz.json"
 }
 
+# Pull prompts reference the scope tag and the pre-generated query files. Assert those query
+# files exist (proves the orchestrator pre-generated them -- the fix for the live "sub-agent
+# can't run python3" stall) before emitting fixtures keyed off the tag.
 case "$prompt" in
   *"SIZING ONLY"*)
     printf '{"accounts":{"111111111111":40,"%s":30},"regions":{}}' "$AZ" > "$SIZES" ;;
-  *"account='111111111111'"*) emit_aws   "111111111111" ;;
-  *"account='8be0927e"*)      emit_azure "azure" ;;
-  *)                          emit_aws "tenant"; emit_azure "tenant" ;;  # tenant-wide pull = both
+  *"scope tag "*)
+    tag="$(printf '%s\n' "$prompt" | sed -n "s/.*scope tag '\\([^']*\\)'.*/\\1/p" | head -1)"
+    # the fix pre-generates A/B/C query files under raw/_queries_<tag>/; fail loudly if missing.
+    for q in A B C; do
+      [ -f "$RAW/_queries_${tag}/${q}.json" ] || { echo "MOCK: missing pre-generated $RAW/_queries_${tag}/${q}.json" >&2; exit 7; }
+    done
+    case "$tag" in
+      111111111111) emit_aws   "111111111111" ;;
+      8be0927e*)    emit_azure "azure" ;;
+      tenant)       emit_aws "tenant"; emit_azure "tenant" ;;  # tenant-wide pull = both accounts
+      *)            echo "MOCK: unexpected tag '$tag'" >&2; exit 8 ;;
+    esac ;;
+  *) echo "MOCK: unrecognized prompt" >&2; exit 9 ;;
 esac
 exit 0

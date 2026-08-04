@@ -81,8 +81,17 @@ fi
 UDM_TOOL="mcp__${CONNECTOR}__udm_execute_query"
 
 mkdir -p "$DATA_DIR"
+# Absolute path: headless sessions get it via --add-dir, which must be unambiguous.
+DATA_DIR="$(cd "$DATA_DIR" && pwd)"
 RAW_DIR="$DATA_DIR/raw"; mkdir -p "$RAW_DIR"
 rm -f "$RAW_DIR"/raw_*.json "$DATA_DIR/_coverage_gap.txt" 2>/dev/null || true
+
+# A headless `claude -p` runs non-interactively: it CANNOT answer a permission prompt, so any
+# tool it needs must be pre-authorized or it stalls. We (a) --add-dir the data dir so writing raw
+# pages there is allowed, and (b) --permission-mode acceptEdits so file writes + the explicitly
+# --allowedTools MCP call proceed without prompting. We do NOT use --dangerously-skip-permissions:
+# the grant stays scoped to the one MCP tool + writes under the data dir.
+CLAUDE_PERM=(--add-dir "$DATA_DIR" --permission-mode acceptEdits)
 
 # --- 1. SIZE (auto, unless --sizes provided) ------------------------------------------------
 if [ -z "$SIZES" ]; then
@@ -97,7 +106,7 @@ Steps:
 3. From the by-account results build {\"accounts\":{\"<EntityTenant Id>\":<count>,...}} and from
    the by-region results {\"regions\":{\"<EntityTenant Id>|<EntityRegion>\":<count>,...}}.
 4. Write the combined JSON object {\"accounts\":{...},\"regions\":{...}} to ${SIZES}. Nothing else."
-  if ! "$CLAUDE_BIN" -p "$size_prompt" --allowedTools "$UDM_TOOL" "Write" </dev/null; then
+  if ! "$CLAUDE_BIN" -p "$size_prompt" --allowedTools "$UDM_TOOL" "Write" "${CLAUDE_PERM[@]}" </dev/null; then
     die "sizing run failed. Re-run, or pass a pre-measured --sizes FILE."
   fi
   [ -f "$SIZES" ] || die "sizing did not produce $SIZES (the agent may lack connector access)."
@@ -137,18 +146,45 @@ if [ "$ASSUME_YES" -ne 1 ]; then
 fi
 
 # --- 4. PULL per chunk (fresh headless session each; partial-failure tolerant) --------------
+# We PRE-GENERATE the three scoped query JSONs here (in this trusted shell -- no sub-agent code
+# execution / Bash permission needed) and hand them to the headless session, which only has to
+# execute each via the MCP tool, paginate, and write raw pages. This keeps the sub-agent's grant
+# minimal (the one MCP tool + Write under --add-dir) and removes the fragile "let the agent run
+# python3" step that a non-interactive session cannot get approved.
 run_scope () {
-  local tag="$1" acct="$2" region="$3" scope_py
-  if [ "$tag" = "tenant" ]; then scope_py=""
-  else scope_py="account='${acct}'"; [ -n "$region" ] && scope_py="${scope_py}, region='${region}'"; fi
-  local prompt="Run the external attack-path pull for Tenable Cloud Security via the ${CONNECTOR}
-MCP connector, scope: ${tag}. Generate queries with
-attack_path_spec.build_inventory_query(${scope_py}), build_endpoints_query(${scope_py}),
-build_cve_query(${scope_py}); paginate each fully via the ${UDM_TOOL} tool. Save each raw
-response page VERBATIM to ${RAW_DIR}/raw_A_${tag}_p<N>.json, raw_B_${tag}_p<N>.json,
-raw_C_${tag}_p<N>.json. Do NOT assemble or render; only write raw pages."
+  local tag="$1" acct="$2" region="$3"
+  local qdir="$RAW_DIR/_queries_${tag}"; mkdir -p "$qdir"
+  # generate scoped A/B/C queries to files; failure here is a real error for this scope.
+  if ! ROOT="$ROOT" QDIR="$qdir" ACCT="$acct" REGION="$region" python3 - <<'PY'
+import os, json, sys
+sys.path.insert(0, os.environ["ROOT"])
+import attack_path_spec as s
+acct=os.environ["ACCT"] or None; region=os.environ["REGION"] or None
+kw={}
+if acct: kw["account"]=acct
+if region: kw["region"]=region
+qd=os.environ["QDIR"]
+json.dump(s.build_inventory_query(**kw), open(f"{qd}/A.json","w"))
+json.dump(s.build_endpoints_query(**kw), open(f"{qd}/B.json","w"))
+json.dump(s.build_cve_query(**kw),       open(f"{qd}/C.json","w"))
+PY
+  then
+    echo "  [${tag}] could not generate scoped queries" >&2; return 1
+  fi
+  local prompt="Pull external attack-path data for Tenable Cloud Security via the ${CONNECTOR} MCP
+connector, scope tag '${tag}'. Three ready-to-run UDM query JSON files are on disk -- do NOT write
+or modify queries, just READ and EXECUTE them:
+  ${qdir}/A.json  (inventory)
+  ${qdir}/B.json  (endpoints)
+  ${qdir}/C.json  (cves)
+For each of A, B, C: read the file, pass its exact contents as the 'query' argument to the
+${UDM_TOOL} tool with skip=0, then repeat with skip incremented by 20 while the response's
+hasMore is true. Write EACH raw response page VERBATIM (the full JSON the tool returns) to
+${RAW_DIR}/raw_A_${tag}_p<N>.json, raw_B_${tag}_p<N>.json, raw_C_${tag}_p<N>.json (N = 0,1,2,...).
+Do NOT assemble, merge, or render. Only read the 3 query files and write raw response pages.
+You have the ${UDM_TOOL} tool and Write; no other tools are needed."
   log "--- pull scope: ${tag} ---"
-  "$CLAUDE_BIN" -p "$prompt" --allowedTools "$UDM_TOOL" "Write" </dev/null
+  "$CLAUDE_BIN" -p "$prompt" --allowedTools "$UDM_TOOL" "Write" "Read" "${CLAUDE_PERM[@]}" </dev/null
 }
 
 NFAILED=0; FAILED_SCOPES=""
