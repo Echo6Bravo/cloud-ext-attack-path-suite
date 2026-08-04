@@ -4,6 +4,21 @@ All notable changes are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed / changed (from a live end-to-end run against a real multi-cloud tenant)
+- **Headless-permission fix in `run_attack_path.sh`** (the orchestrator): a non-interactive
+  `claude -p` cannot answer permission prompts, so pull sessions stalled on unapproved `python3`
+  and file writes and produced empty reports. Fixed by (a) launching each session with
+  `--add-dir <data>` + `--permission-mode acceptEdits`, and (b) PRE-GENERATING the scoped A/B/C
+  query JSONs in the trusted parent shell and having the sub-agent only read+execute them (so it
+  needs no code-execution approval). Verified live: pull now writes real raw pages.
+- **Docs:** MCP SKILL.md documents the permission mechanics and the measured **speed** of headless
+  fan-out (~8 min per small account → large tenants are hours-long unattended jobs; use the API
+  edition for fast unattended scale).
+- **Tests:** orchestrator end-to-end test now guards the fix — asserts the permission flags reach
+  `claude` and that queries are pre-generated (proven a real guard via `mutation-check.sh`).
+
 ## [1.0.0] — 2026-08-03
 
 Initial public release — the Cloud External Attack-Path Suite.
