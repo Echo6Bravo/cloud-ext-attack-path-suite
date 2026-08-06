@@ -39,7 +39,8 @@ produces.
    prominent fidelity-gap note.
 
 ## Use it
-Invoke the **`ext-attack-path-api`** skill. See `skills/ext-attack-path-api/SKILL.md` for
+Invoke the skill as **`/ext-attack-path-agent-api:ext-attack-path-api`** (plugin skills are
+namespaced by plugin name), or just ask in natural language. See `skills/ext-attack-path-api/SKILL.md` for
 the workflow and fidelity table, and `.../references/graphql-queries.md` for the verified
 queries and schema facts.
 
