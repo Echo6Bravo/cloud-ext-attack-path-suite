@@ -17,7 +17,9 @@ a reachable IP:port plus a high CVSS is **not** enough.
 4. Optionally runs daily and reports the delta.
 
 ## Use it
-Invoke the **`ext-attack-path`** skill (e.g. "run the external attack-path sweep"). See
+Invoke the skill as **`/ext-attack-path-agent:ext-attack-path`** (plugin skills are
+namespaced by plugin name), or just ask in natural language (e.g. "run the external
+attack-path sweep"). See
 `skills/ext-attack-path/SKILL.md` for the full workflow and
 `skills/ext-attack-path/references/udm-queries.md` for the four spec-generated queries.
 

@@ -223,15 +223,30 @@ pick by how you connect to Tenable Cloud Security.
 | **Extra setup** | MCP connector configured | `TENABLE_CS_API_URL`, `TENABLE_CS_API_TOKEN` |
 | **Verified** | End-to-end vs. live tenant | Queries verified vs. live schema |
 
-**Install locally (either edition):**
+**Install (either edition).** Both plugins are committed to this repo, so no clone or build
+step is needed — add the repo as a plugin marketplace and install directly. Run these inside
+Claude Code:
 
-```bash
-./build.sh                                   # verify spec, sync, and package to dist/
-# add this repo as a marketplace, then enable a plugin:
-#   /plugin marketplace add /path/to/Cloud-Ext-Attack-Path-Report
-#   /plugin install ext-attack-path-agent          (MCP edition)
-#   /plugin install ext-attack-path-agent-api       (API-token edition)
+```text
+/plugin marketplace add Echo6Bravo/cloud-ext-attack-path-suite
+/plugin install ext-attack-path-agent@cloud-ext-attack-path-suite       # MCP edition
+/plugin install ext-attack-path-agent-api@cloud-ext-attack-path-suite   # API-token edition
 ```
+
+If the install summary says `Run /reload-plugins to activate.`, run that. Then invoke the
+skill — plugin skills are namespaced by their plugin name:
+
+```text
+/ext-attack-path-agent:ext-attack-path            (MCP edition)
+/ext-attack-path-agent-api:ext-attack-path-api    (API-token edition)
+```
+
+You can also just ask in natural language (e.g. *"run the external attack-path sweep"*).
+
+> **Developing locally?** Clone the repo, run `./build.sh` (verifies the spec, syncs the
+> shared library into both plugins, packages to `dist/`), then
+> `/plugin marketplace add /path/to/cloud-ext-attack-path-suite` to add your working copy
+> instead of the published repo.
 
 **Run daily.** The API-token edition ships `plugins/ext-attack-path-agent-api/run_daily.sh`
 and a crontab example (see that edition's `SKILL.md`); the MCP edition can be driven by the
