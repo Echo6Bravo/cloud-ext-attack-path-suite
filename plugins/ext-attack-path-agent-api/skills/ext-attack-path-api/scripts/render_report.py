@@ -47,9 +47,6 @@ ap.add_argument("--no-endpoint",action="store_true",
                 help="REDUCED mode (API/GraphQL edition): no observed endpoints available, so "
                      "gate 8 degrades to the listening-component test only (no port correlation). "
                      "Auto-enabled when dataset B is empty. Banners the report as reduced-fidelity.")
-args=ap.parse_args()
-
-DATE=args.date
 
 def _die(msg, code=2):
     """Emit a clear, actionable error to stderr and exit -- never a raw traceback.
@@ -69,17 +66,6 @@ def _load_json(path, what):
     except OSError as e:
         _die(f"cannot read {what} ({path}): {e}")
 
-# --- load + validate structure up front (clear errors, not tracebacks) ---
-data=_load_json(os.path.join(args.data,"assembled.json"), "assembled.json")
-if not isinstance(data, dict):
-    _die('assembled.json must be a JSON object with keys "A","B","C".')
-for k in ("A","B","C"):
-    if k not in data:
-        _die(f'assembled.json is missing required key "{k}" '
-             f'(expected {{"A":[inventory],"B":[endpoints],"C":[cve rows]}}).')
-    if not isinstance(data[k], list):
-        _die(f'assembled.json key "{k}" must be a list, got {type(data[k]).__name__}.')
-
 def _rows(key):
     """Yield only well-formed dict rows from a dataset, skipping (and counting) junk so one
     malformed row can't crash the whole render."""
@@ -90,151 +76,70 @@ def _rows(key):
     if skipped:
         sys.stderr.write(f"render_report: WARNING: skipped {skipped} non-object row(s) in dataset {key}.\n")
     return good
-
-data["A"]=_rows("A"); data["B"]=_rows("B"); data["C"]=_rows("C")
-
-# Memory safety valve: bound dataset C before the expensive per-row work (copies, grouping,
-# HTML build). Keep the highest-risk rows (KEV first, then EPSS) and record the truncation so
-# it surfaces in the report banner -- never a silent cut. Upstream `assemble.py --max-hosts`
-# is the better lever (keeps assembled.json itself small), but this protects a render given a
-# huge file directly. 0 = unlimited.
-ROWS_TRUNCATED=0
-if args.max_rows and len(data["C"])>args.max_rows:
-    ROWS_TRUNCATED=len(data["C"])-args.max_rows
-    def _risk(r):
-        try: return (1 if r.get("kev") else 0, float(r.get("epss") or 0))
-        except (TypeError,ValueError): return (0,0.0)
-    data["C"]=sorted(data["C"], key=_risk, reverse=True)[:args.max_rows]
-    sys.stderr.write(f"render_report: WARNING: dataset C truncated to top {args.max_rows} of "
-                     f"{args.max_rows+ROWS_TRUNCATED} rows by risk (--max-rows); report banners this.\n")
-
-# endpoint IP:port map (optional enrichment) -- tolerate a missing/malformed file
-EPIP={}
-_ipf=os.path.join(args.data,"endpoint_ips.json")
-if os.path.exists(_ipf):
-    _ips=_load_json(_ipf,"endpoint_ips.json")
-    for e in (_ips.get("endpoints") if isinstance(_ips,dict) else None) or []:
-        if isinstance(e,dict) and e.get("name") is not None and e.get("port") is not None:
-            EPIP.setdefault(e["name"],{})[e["port"]]=e.get("ip")
 def ip_for(name,port):
     return EPIP.get(name,{}).get(port)
-
-# Build lookups defensively: rows may be missing instance_id/ports/name.
-A={h["instance_id"]:h for h in data["A"] if h.get("instance_id") is not None}
 def _ports_of(h):
     out=set()
     for p in (h.get("ports") or []):
         if isinstance(p,dict) and p.get("port") is not None: out.add(p["port"])
     return out
-PORTS={h["instance_id"]:_ports_of(h) for h in data["B"] if h.get("instance_id") is not None}
-NAMEPORTS={}
-for h in data["B"]:
-    if h.get("name") is not None: NAMEPORTS.setdefault(h["name"],set()).update(_ports_of(h))
 
-# ---- apply spec post-filter (Stage 3.4 component<->port + Stopped safety net) ----
-# Reduced mode: explicit --no-endpoint, or auto when the endpoint dataset B is empty
-# (the API/GraphQL edition has no observed listeners). Gate 8 then degrades to the
-# listening-component test only, and the report is bannered as reduced-fidelity.
-REDUCED = args.no_endpoint or (len(data["B"])==0 and len(data["C"])>0)
+def _num(v):
+    """Coerce to float, or return None when the field is absent/null/malformed.
+
+    Returning None rather than 0.0 is deliberate and load-bearing. For EPSS, "no data" and
+    "lowest possible score" are DIFFERENT states, and a coercion that collapses them lets the
+    report assert enrichment it does not have: a malformed or missing feed value renders as a
+    0% row, and a 0% row is indistinguishable from a genuine floor value. Callers that need a
+    number for ranking say `or 0.0` at the point of use, so the substitution is visible there
+    instead of being baked into the data."""
+    if v is None: return None
+    try: return float(v)
+    except (TypeError,ValueError): return None
 
 def _norm_cve(m):
-    """Normalize a raw C row to safe, correctly-typed defaults so a missing/null field can
-    never crash the render. Returns a NEW dict (originals may be missing any key)."""
-    def num(v):
-        try: return float(v) if v is not None else 0.0
-        except (TypeError,ValueError): return 0.0
-    epss=num(m.get("epss")); kev=bool(m.get("kev"))
-    # gate_reason is optional in the input; derive it from epss/kev if absent so a hand-built
-    # or older assembled.json can't crash evidence_cell().
-    gr=m.get("gate_reason")
-    if gr not in ("both","kev","epss"):
-        gr = "both" if (kev and epss>=spec.EPSS_FLOOR) else ("kev" if kev else "epss")
+    """Normalize a raw C row to safe, correctly-typed values so a missing/null field can never
+    crash the render. Returns a NEW dict (originals may be missing any key). Numeric fields are
+    float OR None -- None means "not present in the source data", never zero."""
+    epss=_num(m.get("epss")); kev=bool(m.get("kev"))
+    # Evidence is DERIVED here from the values this row actually carries, and any gate_reason
+    # supplied in the input is deliberately not trusted. Reason: the pill sits in the same table
+    # row as the EPSS percentage that is supposed to justify it, so a supplied "epss" on a row
+    # whose EPSS is absent or below the floor is the report citing a basis it is simultaneously
+    # displaying as unmet. Deriving keeps claim and evidence consistent by construction.
+    #
+    # 'unknown' is a real fourth outcome, NOT a synonym for 'epss'. With no KEV flag and no
+    # usable EPSS value there is no public-evidence basis to show; labelling that row "EPSS" is
+    # a false evidence claim, and it is exactly what a malformed feed produces.
+    # (All real producers agree with this derivation: assemble.py sets "both"/"kev"/"epss" from
+    # the same two inputs, and assemble_api.py's kev is bool(mature) -- so nothing is lost.)
+    if kev and epss is not None and epss>=spec.EPSS_FLOOR: gr="both"
+    elif kev:                                              gr="kev"
+    elif epss is not None and epss>=spec.EPSS_FLOOR:       gr="epss"
+    else:                                                  gr="unknown"
     return {**m,
         "instance_id": m.get("instance_id"),
         "name": m.get("name") if m.get("name") is not None else "(unknown)",
         "component": (m.get("component") or ""),
         "cve": m.get("cve") if m.get("cve") is not None else "(no CVE id)",
-        "epss": epss, "cvss": num(m.get("cvss")),
+        "epss": epss, "cvss": _num(m.get("cvss")),
         "kev": kev, "gate_reason": gr,
         "severity": m.get("severity") if m.get("severity") is not None else "",
         "status": m.get("status") if m.get("status") is not None else "Open"}
-
-paths=[]; review=[]; excluded=[]
-for _raw in data["C"]:
-    m=_norm_cve(_raw); iid=m["instance_id"]; host=A.get(iid)
-    vp = PORTS.get(iid) or NAMEPORTS.get(m["name"]) or set()
-    # Gate 4 (full-fidelity MCP only): a finding qualifies -- keep OR review -- only if its host
-    # has an OBSERVED listening endpoint. A host with no validated endpoint failed gate 4 and must
-    # not leak into either bucket (esp. 'review', where an unmapped component would otherwise
-    # surface a non-exposed host as if it were exposed). In REDUCED mode there are no endpoints by
-    # definition, so this gate is not applied (the reduced banner already states that limitation).
-    if not REDUCED and not vp:
-        excluded.append({**m,"reason":"no observed listening endpoint on host (fails gate 4: exposure)"}); continue
-    status,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
-    if status=="drop":
-        excluded.append({**m,"reason":reason}); continue
-    sk=spec.service_key(m["component"]); need=spec.SERVICE_PORTS.get(sk,set())
-    port=sorted(vp & need)[0] if (vp & need) else None
-    row={**m,"port":port,"service":sk,"pf_status":status,"pf_reason":reason,
-         "privileged": bool(host.get("privileged")) if host else False,
-         "type": host.get("type") if host else m.get("type"),
-         "tenant": (host.get("tenant") if host else None) or "",
-         "identity_ids": [i for i in (host.get("identity_ids") or []) if i] if host else []}
-    # 'review' = unmapped-but-exposed vulnerable component (anti-false-negative): surface it
-    # in a separate bucket rather than either confirming it as a path or silently dropping it.
-    (paths if status=="keep" else review).append(row)
-
-# group per host
-hosts={}
-for p in paths:
-    hosts.setdefault(p["instance_id"],{"name":p["name"],"type":p["type"],"tenant":p["tenant"],
-        "privileged":p["privileged"],"identity_ids":p["identity_ids"],
-        "ports":sorted(PORTS.get(p["instance_id"]) or NAMEPORTS.get(p["name"]) or []),"cves":[]})
-    hosts[p["instance_id"]]["cves"].append(p)
-
-# CVE-age proxy (fail-open) + primary CVE per host
-for h in hosts.values():
-    for c in h["cves"]:
-        yr,flag=spec.age_label(c["cve"],int(DATE[:4])); c["year"]=yr; c["recent"]=(flag=="recent")
-    h["cves"].sort(key=lambda c:(c["epss"], c["cvss"]),reverse=True)
-    h["prim"]=h["cves"][0]
-
-hostlist=list(hosts.values())
-# rank: privileged, then any-KEV, then max epss
-for h in hostlist:
-    h["anykev"]=any(c["kev"] for c in h["cves"]); h["maxepss"]=max(c["epss"] for c in h["cves"])
-hostlist.sort(key=lambda h:(h["privileged"],h["anykev"],h["maxepss"]),reverse=True)
-# Scale control: render full cards only for the top --max-cards hosts (already risk-ranked);
-# the remainder are summarized in a compact overflow table so the HTML stays openable in a
-# very large environment. 0 = unlimited (original behavior).
-overflow=[]
-if args.max_cards and len(hostlist)>args.max_cards:
-    overflow=hostlist[args.max_cards:]
-    hostlist=hostlist[:args.max_cards]
-tier1=[h for h in hostlist if h["privileged"]]
-tier2=[h for h in hostlist if not h["privileged"]]
 
 # accounts in scope (from full 114 inventory, not just live-path hosts)
 # tenant may be null/missing on a malformed row -> coerce to a visible placeholder, never None.
 def _tenant(h):
     t=h.get("tenant"); return t if t else "(unknown account)"
-accts=sorted({_tenant(h) for h in data["A"]})
 # Derive provider from the host EntityTypeName (ground truth) rather than guessing from the
 # tenant-id format -- 12-digit strings are ambiguous between AWS accounts and GCP projects.
 TYPE_PROVIDER={"AwsEc2Instance":"AWS","GcpComputeInstance":"GCP","AzureComputeVirtualMachine":"Azure"}
-_ACCT_PROV={}
-for h in data["A"]:
-    prov=TYPE_PROVIDER.get(h.get("type"))
-    if prov: _ACCT_PROV.setdefault(_tenant(h),prov)
 def provider_of(a):
     a=a or ""
     if a in _ACCT_PROV: return _ACCT_PROV[a]
     if "-" in a: return "Azure"          # GUID subscription fallback
     return "Other"
 def acct_kind(a): return {"AWS":"AWS account","GCP":"GCP project","Azure":"Azure subscription"}.get(provider_of(a),"Account")
-# group accounts by provider for the header (item 5)
-ACCT_BY_PROVIDER={}
-for a in accts: ACCT_BY_PROVIDER.setdefault(provider_of(a),[]).append(a)
 
 def esc(s): return html.escape(str(s)) if s is not None else ""
 SVC_LABEL={"openssh-server":"OpenSSH (sshd)","apache2":"Apache HTTP","httpd":"Apache HTTP (httpd)","nginx":"nginx","tomcat":"Tomcat","mysql-server":"MySQL","mariadb-server":"MariaDB","grafana":"Grafana","redis-server":"Redis","windows-os":"Windows RDP/OS"}
@@ -363,10 +268,12 @@ table.vt th{text-align:left;color:var(--mut);border-bottom:1px solid var(--line)
 table.vt td{border-bottom:1px solid #262f31;padding:6px 7px;vertical-align:top;text-align:left}
 .cve a{color:var(--accent);text-decoration:none;font-weight:600}.num{text-align:left;font-variant-numeric:tabular-nums}
 .pill{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700}
+.pill-na{background:rgba(133,149,162,.16);color:var(--mut);border:1px solid rgba(133,149,162,.4);font-weight:600;font-style:italic}
 .ev{display:inline-block;padding:1px 8px;border-radius:5px;font-size:10.5px;font-weight:700;white-space:nowrap}
 .ev-epss{background:rgba(255,210,0,.16);color:var(--med);border:1px solid rgba(255,210,0,.4)}
 .ev-kev{background:rgba(255,91,91,.16);color:#ff8a8a;border:1px solid rgba(255,91,91,.4)}
 .ev-both{background:rgba(176,0,0,.35);color:#ffb3b3;border:1px solid rgba(255,91,91,.6)}
+.ev-unknown{background:rgba(133,149,162,.16);color:var(--mut);border:1px dashed rgba(133,149,162,.55)}
 .ipport{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#cdd7dd}
 footer{color:var(--mut);font-size:11px;padding:20px 40px;border-top:1px solid var(--line)}
 
@@ -418,16 +325,26 @@ footer{color:var(--mut);font-size:11px;padding:20px 40px;border-top:1px solid va
   .meta code,.ipport{color:#2b3138 !important}
 }
 """
+# A None score means the source data carried no value. Render that as a neutral "n/a" pill rather
+# than 0 / 0%: a fabricated zero reads as a real measurement at the bottom of the scale, and the
+# whole point of the None is that the report must not claim a number it never received.
+def _na_pill(): return '<span class="pill pill-na" title="not present in source data">n/a</span>'
+def pct(v):
+    """EPSS as a percentage string, or 'n/a' when the score is absent. Plain-text callers only."""
+    return "n/a" if v is None else f"{v*100:.0f}%"
 def cvss_pill(c):
+    if c is None: return _na_pill()
     col="#ff5b5b" if c>=9 else "#ff9f45" if c>=7 else "#ffd200"; return f'<span class="pill" style="background:{col}22;color:{col}">{c}</span>'
 def epss_pill(e):
+    if e is None: return _na_pill()
     col="#ff5b5b" if e>=0.7 else "#ff9f45" if e>=0.5 else "#ffd200"; return f'<span class="pill" style="background:{col}22;color:{col}">{e*100:.0f}%</span>'
 
 def diagram(h):
     p=h["prim"]; svc=svc_label(p["service"]); port=p["port"]; cve=p["cve"]
     hi=h["privileged"]; roles=", ".join(h["identity_ids"][:1]) if h["identity_ids"] else "instance role"
     W=1200;bw=250;gap=(W-4*bw)/3;y=42;bh=150;H=y+bh+14;xs=[i*(bw+gap) for i in range(4)]
-    c1="#e7ff00";c2="#ff5b5b" if p["cvss"]>=9 else "#ff9f45";c3="#ff5b5b" if hi else "#e7ff00";c4="#ff5b5b" if hi else "#8595a2"
+    # an absent CVSS must not colour the node as if it had been measured below 9 -- treat as unscored
+    c1="#e7ff00";c2="#ff5b5b" if (p["cvss"] is not None and p["cvss"]>=9) else "#ff9f45";c3="#ff5b5b" if hi else "#e7ff00";c4="#ff5b5b" if hi else "#8595a2"
     def wrap(t,mc,ml):
         w=str(t).split();L=[];cur=""
         for x in w:
@@ -479,7 +396,9 @@ def diagram(h):
     pip=ip_for(h["name"],port)
     n1=[(f"{svc} :{port}","lead"),(f"{pip}:{port}" if pip else "validated endpoint","dim"),
         ("Internet-reachable","dim")]
-    n2=[(cve+f"  ({p['year']})","lead"),("Remotely exploitable","bold"),(f"EPSS {p['epss']*100:.0f}% · CVSS {p['cvss']}"+(" · KEV" if p['kev'] else ""),"dim")]
+    _e = f"EPSS {p['epss']*100:.0f}%" if p["epss"] is not None else "EPSS n/a"
+    _c = f"CVSS {p['cvss']}" if p["cvss"] is not None else "CVSS n/a"
+    n2=[(cve+f"  ({p['year']})","lead"),("Remotely exploitable","bold"),(f"{_e} · {_c}"+(f" · {_kev()}" if p['kev'] else ""),"dim")]
     n3=[(roles,"lead"),("Privileged identity" if hi else "Standard identity","dim")]
     n4=[("Compromise service → host → "+("project/account control" if hi else "host foothold"),"dim")]
     return (f'<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" class="diagram" preserveAspectRatio="xMidYMid meet">'
@@ -489,12 +408,40 @@ def diagram(h):
      +node(xs[0],c1,"EXPOSED SERVICE","\U0001F310",n1)+node(xs[1],c2,"EXPLOITABLE VULN","\U0001F4A5",n2)
      +node(xs[2],c3,"CLOUD IDENTITY","\U0001F464",n3)+node(xs[3],c4,"HIGHEST-RISK ACTIONS","⚠",n4)+'</svg>')
 
+# The two editions read DIFFERENT exploitation signals, so every KEV claim in the report has to
+# name the one THIS run actually read. The MCP edition reads the real CISA-KEV flag. The API
+# edition has no such field: assemble_api.py substitutes ExploitMaturity. Printing "CISA KEV"
+# there names a source the run never touched -- the same false-evidence class as the gate_reason
+# derivation above -- and it flatly contradicts the reduced banner's own statement that the API
+# "does not expose ... a CISA-KEV flag". Every KEV string that describes a FINDING or the GATE
+# goes through _kev(); the banner's own "no CISA-KEV flag" sentence is deliberately literal.
+REDUCED=False
+_KEV_WORDS={
+    # form      MCP edition (authoritative)      REDUCED edition (API substitute)
+    "short":   ("KEV",                           "exploit maturity"),        # pills, table headers
+    "badge":   ("CISA KEV",                      "Mature exploit"),          # Title-Case host badge
+    "kpi":     ("On CISA KEV",                   "Mature exploit reported"), # KPI tile label
+    "source":  ("CISA KEV",                      "vendor exploit maturity"), # prose; article-free
+    "adj":     ("CISA-KEV",                      "mature-exploit"),          # attributive: "a X vulnerability"
+    "rank":    ("CISA-KEV",                      "exploit maturity"),        # signal token: sort keys, gate expr
+    "claim":   ("confirmed exploited in the wild",
+                "a mature exploit is reported to exist; in-the-wild use is NOT confirmed"),
+    "gate":    ("confirmed in-the-wild exploitation",
+                "a reported mature exploit (in-the-wild use unconfirmed)"),  # gate criterion 9
+}
+def _kev(form="short"): return _KEV_WORDS[form][1 if REDUCED else 0]
+
 def evidence_cell(c):
-    # collapse KEV + Gate into one "Evidence" pill. EPSS=yellow, KEV=red w/ icon, Both=darker red
+    # collapse KEV + Gate into one "Evidence" pill. EPSS=yellow, KEV=red w/ icon, Both=darker red.
+    # 'unknown' -> say so. Falling through to the EPSS pill (as this did) attaches an "EPSS" basis
+    # to a row whose own EPSS cell reads n/a or below the floor, which is the report asserting
+    # evidence it does not hold. A stated gap is reviewable; a false pill is not.
     gr=c["gate_reason"]
-    if gr=="both":  return '<span class="ev ev-both">&#9888; EPSS + KEV</span>'
-    if gr=="kev":   return '<span class="ev ev-kev">&#9888; KEV</span>'
-    return '<span class="ev ev-epss">EPSS</span>'
+    if gr=="both":  return f'<span class="ev ev-both">&#9888; EPSS + {_kev()}</span>'
+    if gr=="kev":   return f'<span class="ev ev-kev">&#9888; {_kev()}</span>'
+    if gr=="epss":  return '<span class="ev ev-epss">EPSS</span>'
+    return ('<span class="ev ev-unknown" title="no EPSS score and no KEV flag in the source data '
+            '-- public-evidence basis unconfirmed">no public signal</span>')
 
 def vtable(h,name):
     out=['<table class="vt"><tr><th>CVE</th><th>Yr</th><th>Exposed endpoint (IP:port)</th><th>Service</th><th>EPSS</th><th>CVSS</th><th>Sev</th><th>Evidence</th><th>Remediation</th></tr>']
@@ -517,7 +464,7 @@ def vtable(h,name):
 
 def card(i,h):
     badges=[f'<span class="badge {"b-hi" if h["privileged"] else "b-std"}">{"Privileged identity" if h["privileged"] else "Standard identity"}</span>']
-    if h["anykev"]: badges.append('<span class="badge b-kev">CISA KEV</span>')
+    if h["anykev"]: badges.append(f'<span class="badge b-kev">{_kev("badge")}</span>')
     if h["prim"]["recent"]: badges.append('<span class="badge b-hi">Recent Critical Vuln</span>')
     return (f'<div class="card {"t1" if h["privileged"] else ""}">'
       f'<div class="chead"><div><span class="rank">#{i}</span><span class="wl">{esc(h["name"])}</span>'
@@ -532,13 +479,13 @@ def overflow_table(rows):
     if not rows: return ""
     out=[f'<div class="tierband t2"><div class="tt">Additional qualifying hosts '
          f'<span class="cnt">{len(rows)} more</span></div>'
-         f'<div class="ts">Beyond the top {args.max_cards} rendered in full above (ranked by privilege, then CISA-KEV, then EPSS). '
+         f'<div class="ts">Beyond the top {args.max_cards} rendered in full above (ranked by privilege, then {_kev("rank")}, then EPSS). '
          f'Re-run with <code>--max-cards 0</code> for a full card per host, or narrow scope by account.</div></div>',
-         '<table class="vt"><tr><th>#</th><th>Workload</th><th>Tier</th><th>Account</th><th>Max EPSS</th><th>KEV</th><th>Qual. CVEs</th></tr>']
+         f'<table class="vt"><tr><th>#</th><th>Workload</th><th>Tier</th><th>Account</th><th>Max EPSS</th><th>{_kev()}</th><th>Qual. CVEs</th></tr>']
     for i,h in enumerate(rows):
         out.append(f'<tr><td class="num">{args.max_cards+i+1}</td><td>{esc(h["name"])}</td>'
           f'<td>{"Tier 1" if h["privileged"] else "Tier 2"}</td><td class="ipport">{esc(acct_kind(h["tenant"]))} {esc(h["tenant"])}</td>'
-          f'<td class="num">{h["maxepss"]*100:.0f}%</td><td>{"yes" if h["anykev"] else "—"}</td>'
+          f'<td class="num">{pct(h["maxepss"])}</td><td>{"yes" if h["anykev"] else "—"}</td>'
           f'<td class="num">{len(h["cves"])}</td></tr>')
     out.append("</table>");return "".join(out)
 
@@ -563,7 +510,7 @@ def review_table(rows):
          f'service (or, in reduced mode, whose port could not be observed). They are <b>not</b> confirmed '
          f'attack paths and <b>not</b> dismissed &mdash; triage each: if the component is an internet-facing '
          f'service, add it to <code>SERVICE_PORTS</code> and it will promote to a full finding next run.</div></div>',
-         '<table class="vt"><tr><th>Workload</th><th>Account</th><th>Exposed endpoint(s) (IP:port)</th><th>Component</th><th>CVE</th><th>EPSS</th><th>KEV</th><th>Why review</th></tr>']
+         f'<table class="vt"><tr><th>Workload</th><th>Account</th><th>Exposed endpoint(s) (IP:port)</th><th>Component</th><th>CVE</th><th>EPSS</th><th>{_kev()}</th><th>Why review</th></tr>']
     for r in uniq:
         # Show the host's observed listening endpoint(s) so a customer can locate the source.
         # These rows ARE on internet-exposed hosts (gate 4 passed); the component just wasn't
@@ -576,15 +523,9 @@ def review_table(rows):
           f'<td class="ipport">{esc(eps)}</td>'
           f'<td>{esc(r.get("component") or "?")}</td>'
           f'<td class="cve"><a href="https://nvd.nist.gov/vuln/detail/{esc(r["cve"])}" target="_blank" rel="noopener noreferrer">{esc(r["cve"])}</a></td>'
-          f'<td class="num">{r.get("epss",0)*100:.0f}%</td><td>{"yes" if r.get("kev") else "—"}</td>'
+          f'<td class="num">{pct(r.get("epss"))}</td><td>{"yes" if r.get("kev") else "—"}</td>'
           f'<td style="color:var(--mut)">{esc(r.get("pf_reason","")[:90])}</td></tr>')
     out.append("</table>");return "".join(out)
-
-# Counts reflect the TRUE qualifying set (rendered cards + overflow), not just what got cards.
-allhosts=hostlist+overflow
-n1p=sum(1 for h in tier1);n2p=sum(1 for h in tier2)
-n1p_total=sum(1 for h in allhosts if h["privileged"]);n2p_total=sum(1 for h in allhosts if not h["privileged"])
-nkev=sum(1 for h in allhosts if h["anykev"])
 def accounts_block():
     order=["AWS","GCP","Azure","Other"]
     rows=[]
@@ -594,41 +535,195 @@ def accounts_block():
         rows.append(f'<div class="acctrow"><span class="acctprov">{prov} ({len(ids)}):</span> '
                     f'<span class="acctids">{esc(", ".join(ids))}</span></div>')
     return "".join(rows)
-cards1="".join(card(i+1,h) for i,h in enumerate(tier1))
-cards2="".join(card(n1p+i+1,h) for i,h in enumerate(tier2))
-# Reduced-mode framing (API/GraphQL edition: no observed endpoints, no port correlation).
-if REDUCED:
-    reduced_banner=('<div class="note" style="border-left-color:var(--high)"><b>&#9888; Reduced-fidelity report (API-token edition).</b> '
+
+# ---------------------------------------------------------------------------
+# Script entry point. Everything below runs ONLY when this file is executed
+# directly. Without this guard, merely importing render_report -- from a test
+# helper, a doc generator, `pytest --collect-only` -- parsed sys.argv, read
+# assembled.json, and WROTE the output HTML as an import side effect, and
+# argparse called sys.exit() on any flag the importing process was passing.
+# ---------------------------------------------------------------------------
+def main():
+    # Declared global because the render helpers defined above read these names directly.
+    # Threading them through ~15 function signatures is a bigger change than this fix.
+    global args, DATE, data, EPIP, PORTS, NAMEPORTS, _ACCT_PROV, ACCT_BY_PROVIDER, n1p, REDUCED
+
+    args=ap.parse_args()
+
+    # --date is parsed, not trusted. It feeds int(DATE[:4]) as the current year for the CVE-age
+    # proxy, so an unvalidated value fails in two silent ways: `--date 99` slices to "99", int()
+    # yields year 99, every CVE reads as decades old, and the render exits 0 with a plausible-looking
+    # report; a non-numeric value raises a bare ValueError traceback instead. Validate once here so
+    # both become one clear rc=2 message, and so DATE is a real date everywhere downstream.
+    try:
+        DATE = datetime.date.fromisoformat(args.date).isoformat()
+    except ValueError:
+        _die(f"--date must be an ISO calendar date (YYYY-MM-DD), got {args.date!r}. "
+             f"Omit --date to use today.")
+
+    # --- load + validate structure up front (clear errors, not tracebacks) ---
+    data=_load_json(os.path.join(args.data,"assembled.json"), "assembled.json")
+    if not isinstance(data, dict):
+        _die('assembled.json must be a JSON object with keys "A","B","C".')
+    for k in ("A","B","C"):
+        if k not in data:
+            _die(f'assembled.json is missing required key "{k}" '
+             f'(expected {{"A":[inventory],"B":[endpoints],"C":[cve rows]}}).')
+        if not isinstance(data[k], list):
+            _die(f'assembled.json key "{k}" must be a list, got {type(data[k]).__name__}.')
+
+    data["A"]=_rows("A"); data["B"]=_rows("B"); data["C"]=_rows("C")
+
+    # Memory safety valve: bound dataset C before the expensive per-row work (copies, grouping,
+    # HTML build). Keep the highest-risk rows (KEV first, then EPSS) and record the truncation so
+    # it surfaces in the report banner -- never a silent cut. Upstream `assemble.py --max-hosts`
+    # is the better lever (keeps assembled.json itself small), but this protects a render given a
+    # huge file directly. 0 = unlimited.
+    ROWS_TRUNCATED=0
+    if args.max_rows and len(data["C"])>args.max_rows:
+        ROWS_TRUNCATED=len(data["C"])-args.max_rows
+        def _risk(r):
+            try: return (1 if r.get("kev") else 0, float(r.get("epss") or 0))
+            except (TypeError,ValueError): return (0,0.0)
+        data["C"]=sorted(data["C"], key=_risk, reverse=True)[:args.max_rows]
+        sys.stderr.write(f"render_report: WARNING: dataset C truncated to top {args.max_rows} of "
+                     f"{args.max_rows+ROWS_TRUNCATED} rows by risk (--max-rows); report banners this.\n")
+
+    # endpoint IP:port map (optional enrichment) -- tolerate a missing/malformed file
+    EPIP={}
+    _ipf=os.path.join(args.data,"endpoint_ips.json")
+    if os.path.exists(_ipf):
+        _ips=_load_json(_ipf,"endpoint_ips.json")
+        for e in (_ips.get("endpoints") if isinstance(_ips,dict) else None) or []:
+            if isinstance(e,dict) and e.get("name") is not None and e.get("port") is not None:
+                EPIP.setdefault(e["name"],{})[e["port"]]=e.get("ip")
+
+    # Build lookups defensively: rows may be missing instance_id/ports/name.
+    A={h["instance_id"]:h for h in data["A"] if h.get("instance_id") is not None}
+    PORTS={h["instance_id"]:_ports_of(h) for h in data["B"] if h.get("instance_id") is not None}
+    NAMEPORTS={}
+    for h in data["B"]:
+        if h.get("name") is not None: NAMEPORTS.setdefault(h["name"],set()).update(_ports_of(h))
+
+    # ---- apply spec post-filter (Stage 3.4 component<->port + Stopped safety net) ----
+    # Reduced mode: explicit --no-endpoint, or auto when the endpoint dataset B is empty
+    # (the API/GraphQL edition has no observed listeners). Gate 8 then degrades to the
+    # listening-component test only, and the report is bannered as reduced-fidelity.
+    REDUCED = args.no_endpoint or (len(data["B"])==0 and len(data["C"])>0)
+
+    paths=[]; review=[]; excluded=[]
+    for _raw in data["C"]:
+        m=_norm_cve(_raw); iid=m["instance_id"]; host=A.get(iid)
+        vp = PORTS.get(iid) or NAMEPORTS.get(m["name"]) or set()
+        # Gate 4 (full-fidelity MCP only): a finding qualifies -- keep OR review -- only if its host
+        # has an OBSERVED listening endpoint. A host with no validated endpoint failed gate 4 and must
+        # not leak into either bucket (esp. 'review', where an unmapped component would otherwise
+        # surface a non-exposed host as if it were exposed). In REDUCED mode there are no endpoints by
+        # definition, so this gate is not applied (the reduced banner already states that limitation).
+        if not REDUCED and not vp:
+            excluded.append({**m,"reason":"no observed listening endpoint on host (fails gate 4: exposure)"}); continue
+        status,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
+        if status=="drop":
+            excluded.append({**m,"reason":reason}); continue
+        # NOT the empty-default defect that was fixed in spec.post_filter: this runs AFTER the
+        # keep/drop decision and only picks a port to DISPLAY. An empty default is the correct
+        # identity here -- a review row legitimately has no mapped port (unknown component, or a
+        # service absent from SERVICE_PORTS), and port=None is what the review table expects.
+        # No exclusion is decided on this value, so an absent key cannot hide a finding.
+        sk=spec.service_key(m["component"]); need=spec.SERVICE_PORTS.get(sk,set())
+        port=sorted(vp & need)[0] if (vp & need) else None
+        row={**m,"port":port,"service":sk,"pf_status":status,"pf_reason":reason,
+             "privileged": bool(host.get("privileged")) if host else False,
+             "type": host.get("type") if host else m.get("type"),
+             "tenant": (host.get("tenant") if host else None) or "",
+             "identity_ids": [i for i in (host.get("identity_ids") or []) if i] if host else []}
+        # 'review' = unmapped-but-exposed vulnerable component (anti-false-negative): surface it
+        # in a separate bucket rather than either confirming it as a path or silently dropping it.
+        (paths if status=="keep" else review).append(row)
+
+    # group per host
+    hosts={}
+    for p in paths:
+        hosts.setdefault(p["instance_id"],{"name":p["name"],"type":p["type"],"tenant":p["tenant"],
+            "privileged":p["privileged"],"identity_ids":p["identity_ids"],
+            "ports":sorted(PORTS.get(p["instance_id"]) or NAMEPORTS.get(p["name"]) or []),"cves":[]})
+        hosts[p["instance_id"]]["cves"].append(p)
+
+    # CVE-age proxy (fail-open) + primary CVE per host
+    for h in hosts.values():
+        for c in h["cves"]:
+            yr,flag=spec.age_label(c["cve"],int(DATE[:4])); c["year"]=yr; c["recent"]=(flag=="recent")
+        # Ranking needs a total order, so an absent score sorts as lowest -- but `or 0.0` here is a
+        # SORT KEY only and never written back onto the row, so the displayed value stays "unknown".
+        h["cves"].sort(key=lambda c:(c["epss"] or 0.0, c["cvss"] or 0.0),reverse=True)
+        h["prim"]=h["cves"][0]
+
+    hostlist=list(hosts.values())
+    # rank: privileged, then any-KEV, then max epss. maxepss stays None when NO cve on the host has
+    # an EPSS score, so the summary table can print "n/a" instead of a fabricated 0%.
+    for h in hostlist:
+        h["anykev"]=any(c["kev"] for c in h["cves"])
+        _known=[c["epss"] for c in h["cves"] if c["epss"] is not None]
+        h["maxepss"]=max(_known) if _known else None
+    hostlist.sort(key=lambda h:(h["privileged"],h["anykev"],h["maxepss"] or 0.0),reverse=True)
+    # Scale control: render full cards only for the top --max-cards hosts (already risk-ranked);
+    # the remainder are summarized in a compact overflow table so the HTML stays openable in a
+    # very large environment. 0 = unlimited (original behavior).
+    overflow=[]
+    if args.max_cards and len(hostlist)>args.max_cards:
+        overflow=hostlist[args.max_cards:]
+        hostlist=hostlist[:args.max_cards]
+    tier1=[h for h in hostlist if h["privileged"]]
+    tier2=[h for h in hostlist if not h["privileged"]]
+    accts=sorted({_tenant(h) for h in data["A"]})
+    _ACCT_PROV={}
+    for h in data["A"]:
+        prov=TYPE_PROVIDER.get(h.get("type"))
+        if prov: _ACCT_PROV.setdefault(_tenant(h),prov)
+    # group accounts by provider for the header (item 5)
+    ACCT_BY_PROVIDER={}
+    for a in accts: ACCT_BY_PROVIDER.setdefault(provider_of(a),[]).append(a)
+
+    # Counts reflect the TRUE qualifying set (rendered cards + overflow), not just what got cards.
+    allhosts=hostlist+overflow
+    n1p=sum(1 for h in tier1)   # card numbering offset for tier 2; n2p_total below is the count
+    n1p_total=sum(1 for h in allhosts if h["privileged"]);n2p_total=sum(1 for h in allhosts if not h["privileged"])
+    nkev=sum(1 for h in allhosts if h["anykev"])
+    cards1="".join(card(i+1,h) for i,h in enumerate(tier1))
+    cards2="".join(card(n1p+i+1,h) for i,h in enumerate(tier2))
+    # Reduced-mode framing (API/GraphQL edition: no observed endpoints, no port correlation).
+    if REDUCED:
+        reduced_banner=('<div class="note" style="border-left-color:var(--high)"><b>&#9888; Reduced-fidelity report (API-token edition).</b> '
         'This run used the public GraphQL API, which does not expose observed listening endpoints, VM running-state, '
         'attack complexity, or a CISA-KEV flag. Findings are therefore <b>candidates</b>: hosts are internet-exposed '
         '(direct, wide/all) and carry an open, network-exploitable vulnerability in a <i>listening-class</i> component, '
         'but the exact open port was <b>not</b> confirmed and the workload was not confirmed running. '
         'Re-run the MCP edition for the authoritative, endpoint-validated list.</div>')
-    confirm_sentence=("Each finding's vulnerable component is a listening-class service (clients/libraries excluded), "
+        confirm_sentence=("Each finding's vulnerable component is a listening-class service (clients/libraries excluded), "
         "though the specific open port could not be confirmed via this API;")
-else:
-    reduced_banner=""
-    confirm_sentence=("Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and")
+    else:
+        reduced_banner=""
+        confirm_sentence=("Every path was confirmed against an <b>observed listening endpoint</b> (not a firewall rule), and")
 
-# Coverage-gap banner: if a chunked run wrote _coverage_gap.txt (some accounts/regions failed
-# to pull), surface it PROMINENTLY so a partial report is never mistaken for complete.
-_gapf=os.path.join(args.data,"_coverage_gap.txt")
-if os.path.exists(_gapf):
-    try:
-        with open(_gapf) as _gf: _gaptxt=_gf.read().strip()
-    except OSError:
-        _gaptxt="Some scopes failed to pull; this report is INCOMPLETE."
-    reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; INCOMPLETE COVERAGE.</b> '
+    # Coverage-gap banner: if a chunked run wrote _coverage_gap.txt (some accounts/regions failed
+    # to pull), surface it PROMINENTLY so a partial report is never mistaken for complete.
+    _gapf=os.path.join(args.data,"_coverage_gap.txt")
+    if os.path.exists(_gapf):
+        try:
+            with open(_gapf) as _gf: _gaptxt=_gf.read().strip()
+        except OSError:
+            _gaptxt="Some scopes failed to pull; this report is INCOMPLETE."
+        reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; INCOMPLETE COVERAGE.</b> '
         f'{esc(_gaptxt)} Findings below reflect only the scopes that pulled successfully.</div>' + reduced_banner)
 
-# Truncation banner: if --max-rows dropped rows, say so prominently (never a silent cut).
-if ROWS_TRUNCATED:
-    reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; TRUNCATED.</b> '
+    # Truncation banner: if --max-rows dropped rows, say so prominently (never a silent cut).
+    if ROWS_TRUNCATED:
+        reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; TRUNCATED.</b> '
         f'This dataset exceeded the --max-rows memory bound; {ROWS_TRUNCATED} lower-risk CVE row(s) '
-        f'were dropped (kept the highest-risk by CISA-KEV then EPSS). Narrow scope (per-account) or '
+        f'were dropped (kept the highest-risk by {_kev("rank")} then EPSS). Narrow scope (per-account) or '
         f'raise --max-rows for the complete set.</div>' + reduced_banner)
 
-HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>External Attack-Path Report</title><style>{CSS}</style></head><body>
 <div class="bar"></div>
 <header>
@@ -646,7 +741,7 @@ HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="
 <div class="kpi red"><div class="n">{len(allhosts)}</div><div class="l">Confirmed attack-path hosts</div></div>
 <div class="kpi red"><div class="n">{n1p_total}</div><div class="l">Tier 1 &mdash; privileged</div></div>
 <div class="kpi"><div class="n">{n2p_total}</div><div class="l">Tier 2 &mdash; standard</div></div>
-<div class="kpi"><div class="n">{nkev}</div><div class="l">On CISA KEV</div></div>
+<div class="kpi"><div class="n">{nkev}</div><div class="l">{_kev("kpi")}</div></div>
 </div>
 
 <div class="exec">
@@ -660,12 +755,12 @@ HTML=f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="
 <li><span class="lbl">Tier 2</span><b>{n2p_total} hosts</b> are the same class of exposed, exploitable service on a standard-privilege identity &mdash; a real foothold, but contained blast radius.</li>
 </ul></li>
 <li><b>The exposed attack surface is concentrated in a few internet-facing services</b> &mdash; principally OpenSSH, Apache/nginx web servers, and (where reachable over RDP) Windows. Local-only and client-side vulnerabilities were deliberately excluded because they cannot be reached over the exposed port.</li>
-<li><b>{nkev} host(s) carry a CISA-KEV vulnerability</b> (confirmed exploited in the wild) &mdash; the highest-urgency subset regardless of tier.</li>
+<li><b>{nkev} host(s) carry a {_kev("adj")} vulnerability</b> ({_kev("claim")}) &mdash; the highest-urgency subset regardless of tier.</li>
 </ul>
 <div class="exec-rec"><b>Priority actions:</b>
 <ul class="sublist">
 <li><span class="lbl">1</span>Remediate Tier 1 first &mdash; patch the exposed service and restrict its port to a bastion/allowlist, and replace over-privileged (editor/owner-class) machine identities with least-privilege roles.</li>
-<li><span class="lbl">2</span>Treat any CISA-KEV finding as immediate across both tiers.</li>
+<li><span class="lbl">2</span>Treat any {_kev("adj")} finding as immediate across both tiers.</li>
 <li><span class="lbl">3</span>Reduce Tier 2 exposure by closing or gating internet-facing services that don't need to be public.</li>
 </ul></div>
 </div>
@@ -681,7 +776,7 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 <li><span class="lbl">6</span>exploitable over the network [AttackVector = Network];</li>
 <li><span class="lbl">7</span>needs no unusual conditions [AttackComplexity = Low];</li>
 <li><span class="lbl">8</span>the vulnerable software is the service on the exposed port, not a local tool or client [component&harr;port correlation];</li>
-<li><span class="lbl">9</span><b>at least one</b> public threat signal: high exploitation probability [EPSS &ge; 0.30] <b>or</b> confirmed in-the-wild exploitation [CISA KEV].</li>
+<li><span class="lbl">9</span><b>at least one</b> public threat signal: high exploitation probability [EPSS &ge; 0.30] <b>or</b> {_kev("gate")} [{_kev("source")}].</li>
 </ul>
 <b>Signals intentionally not used as qualifying gates:</b>
 <ul class="sublist worded">
@@ -689,7 +784,7 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 <li><span class="lbl">VPR score</span>&mdash; not used because this methodology targets the underlying exploitability signals (network reachability, low attack complexity, exploitation likelihood, and confirmed in-the-wild use) directly.</li>
 <li><span class="lbl">Proof-of-concept availability</span>&mdash; not used as a gate because it tends to admit lower-impact and older findings that do not represent current, high-value exposure.</li>
 </ul>
-<b>Notes.</b> The published year shown per CVE is informational only and never affects inclusion; findings without a CVE identifier (e.g. distribution advisories) display a year of &ldquo;&mdash;&rdquo;. The stopped-instance exclusion is enforced at the query root and re-verified in post-processing so it cannot be inadvertently dropped. Because the threat-evidence gate relies on CVE-keyed public sources (EPSS and CISA KEV), findings without a CVE mapping are out of scope by design.</div>
+<b>Notes.</b> The published year shown per CVE is informational only and never affects inclusion; findings without a CVE identifier (e.g. distribution advisories) display a year of &ldquo;&mdash;&rdquo;. The stopped-instance exclusion is enforced at the query root and re-verified in post-processing so it cannot be inadvertently dropped. Because the threat-evidence gate relies on CVE-keyed public sources (EPSS and {_kev("source")}), findings without a CVE mapping are out of scope by design.</div>
 
 <hr class="tierdivider">
 <div class="tierband t1"><div class="tt">TIER 1 &mdash; Privileged Attack Paths <span class="cnt">{n1p_total} hosts</span></div>
@@ -703,11 +798,15 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 {review_table(review)}
 </div>
 <footer>
-Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR CISA-KEV). Ranked by privilege tier, then CISA-KEV, then EPSS. Post-filter: {len(excluded)} CVE-rows dropped (client/library/local component, stopped host, or listening-port not exposed); {len(review)} surfaced for review (exposed + exploitable but component not in the service map &mdash; never silently dropped). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
+Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR {_kev("rank")}). Ranked by privilege tier, then {_kev("rank")}, then EPSS. Post-filter: {len(excluded)} CVE-rows dropped (client/library/local component, stopped host, or listening-port not exposed); {len(review)} surfaced for review (exposed + exploitable but component not in the service map &mdash; never silently dropped). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
 </footer></body></html>"""
-os.makedirs(os.path.dirname(args.out),exist_ok=True)
-with open(args.out,"w") as _out: _out.write(HTML)
-print("wrote report:",args.out,"(",len(HTML),"bytes )")
-print("hosts:",len(allhosts),"(cards:",len(hostlist),"overflow:",len(overflow),") | tier1:",n1p_total,"| tier2:",n2p_total,"| kev-hosts:",nkev,"| accounts:",len(accts))
-print("post-filter: dropped",len(excluded),"| surfaced-for-review",len(review),"(unmapped exposed components)")
-print("distinct CVEs in report:",len({c['cve'] for h in hostlist for c in h['cves']}))
+    os.makedirs(os.path.dirname(args.out),exist_ok=True)
+    with open(args.out,"w") as _out: _out.write(HTML)
+    print("wrote report:",args.out,"(",len(HTML),"bytes )")
+    print("hosts:",len(allhosts),"(cards:",len(hostlist),"overflow:",len(overflow),") | tier1:",n1p_total,"| tier2:",n2p_total,"| kev-hosts:",nkev,"| accounts:",len(accts))
+    print("post-filter: dropped",len(excluded),"| surfaced-for-review",len(review),"(unmapped exposed components)")
+    print("distinct CVEs in report:",len({c['cve'] for h in hostlist for c in h['cves']}))
+
+
+if __name__ == "__main__":
+    main()

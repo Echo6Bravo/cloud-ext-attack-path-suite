@@ -144,6 +144,30 @@ if fails:
     sys.exit(1)
 PY
 
+echo "== 6b. service-table invariant: an unmapped service is REVIEWED, never silently dropped =="
+python3 - <<'PY' && ok "SERVICE_ALIASES<->SERVICE_PORTS invariant + unmapped-service review path" || bad "service-table invariant"
+import sys, attack_path_spec as s
+fails=[]
+# (a) The invariant itself: every alias must resolve to a key that HAS a port mapping. Without
+# this, adding an alias and forgetting the ports entry loses that service's findings.
+orphans=sorted({v for v in s.SERVICE_ALIASES.values() if v not in s.SERVICE_PORTS})
+if orphans: fails.append(f"SERVICE_ALIASES targets missing from SERVICE_PORTS: {orphans}")
+# (b) The safety net for when (a) is broken anyway: an alias resolving to an unmapped key must
+# come back 'review' (surfaced), NOT 'drop'. With `SERVICE_PORTS.get(sk, set())` the intersection
+# below it is unconditionally empty, so this returns 'drop' -- a silent false negative that reads
+# in the report as "not reachable". Inject a deliberately orphaned alias to exercise the branch.
+s.SERVICE_ALIASES["orphansvc"]="orphan-service-with-no-ports"
+try:
+    status, reason = s.post_filter({"component":"orphansvc"}, "Running", {8443})
+finally:
+    del s.SERVICE_ALIASES["orphansvc"]
+if status!="review": fails.append(f"unmapped service: expected 'review', got '{status}' ({reason})")
+if "SERVICE_PORTS" not in reason: fails.append(f"review reason must name the table gap, got: {reason}")
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
 echo "== 7. XSS/injection: malicious data in every field is neutralized (DOM-level check) =="
 python3 - <<'PY' && ok "report is injection-safe" || bad "XSS: live injection found"
 import json, os, subprocess, sys, html.parser, tempfile
@@ -206,6 +230,155 @@ messy=json.dumps({"A":[{"instance_id":"i-1","name":None,"type":"AwsEc2Instance",
  "C":[{"instance_id":"i-1","name":"x","cve":None,"epss":None,"cvss":None,"kev":None,"severity":None,"status":"Open"}]})
 rc,err=run(messy)
 if rc!=0: fails.append(("null-fields",f"exit {rc}, want 0; {err[:80]}"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
+echo "== 8b. --date is validated: no silent bogus year, no raw traceback =="
+python3 - <<'PY' && ok "--date rejects non-dates (rc=2, clean message)" || bad "--date validation"
+import os,subprocess,sys,tempfile
+PY_=sys.executable; fails=[]
+# `--date 99` used to reach int(DATE[:4]) -> year 99, making every CVE read as decades old while
+# the render still exited 0 -- a wrong report that looks right. `--date not-a-date` raised a bare
+# ValueError traceback. Both must now be one clean rc=2.
+for bad_date in ("99","not-a-date","2026-13-45","08/09/2026",""):
+    sub=tempfile.mkdtemp(); open(os.path.join(sub,"assembled.json"),"w").write('{"A":[],"B":[],"C":[]}')
+    r=subprocess.run([PY_,"render_report.py","--data",sub,"--out",os.path.join(sub,"r.html"),
+                      "--date",bad_date],capture_output=True,text=True)
+    if r.returncode!=2: fails.append((bad_date,f"exit {r.returncode}, want 2"))
+    if "Traceback" in r.stderr: fails.append((bad_date,"raw traceback"))
+    if "render_report: ERROR" not in r.stderr: fails.append((bad_date,"no clean ERROR message"))
+# and a valid date is still accepted
+sub=tempfile.mkdtemp(); open(os.path.join(sub,"assembled.json"),"w").write('{"A":[],"B":[],"C":[]}')
+out=os.path.join(sub,"r.html")
+r=subprocess.run([PY_,"render_report.py","--data",sub,"--out",out,"--date","2026-08-09"],
+                 capture_output=True,text=True)
+if r.returncode!=0: fails.append(("2026-08-09",f"exit {r.returncode}, want 0"))
+elif "2026-08-09" not in open(out).read(): fails.append(("2026-08-09","date not in report"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
+echo "== 8c. import safety: importing the renderer has no side effects (__main__ guard) =="
+python3 - <<'PY' && ok "render_report imports cleanly (no argv parse, no file write)" || bad "__main__ guard"
+import os,subprocess,sys,tempfile
+PY_=sys.executable; fails=[]
+# Importing this module used to parse sys.argv, read assembled.json and WRITE the output HTML as
+# an import side effect -- so any importer passing its own flags got argparse's sys.exit() instead.
+probe=("import sys; sys.argv=['pytest','-k','foo','--tb=short']\n"
+       "import render_report as rr\n"
+       "assert callable(rr.main), 'main() missing'\n"
+       "assert callable(rr.evidence_cell) and callable(rr.epss_pill), 'helpers not importable'\n"
+       "print('OK')\n")
+r=subprocess.run([PY_,"-c",probe],capture_output=True,text=True,cwd=os.getcwd())
+if r.returncode!=0: fails.append(("import-with-foreign-argv",f"exit {r.returncode}: {r.stderr.strip()[:120]}"))
+# and it must not write the default output path just by being imported
+outdir=tempfile.mkdtemp(); target=os.path.join(outdir,"must-not-exist.html")
+r=subprocess.run([PY_,"-c",f"import sys; sys.argv=['x','--out',{target!r}]; import render_report"],
+                 capture_output=True,text=True,cwd=os.getcwd())
+if os.path.exists(target): fails.append(("import-side-effect","import wrote the output file"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
+echo "== 8d. evidence pills never overstate: absent EPSS is 'n/a'/'no public signal', not 0%/EPSS =="
+python3 - <<'PY' && ok "evidence claim matches the data the row carries" || bad "false evidence claim"
+import json,os,re,subprocess,sys,tempfile
+PY_=sys.executable; fails=[]
+def render(C, extra=()):
+    d=tempfile.mkdtemp()
+    A=[{"instance_id":"i-1","name":"h","type":"AwsEc2Instance","tenant":"1","privileged":False,"identity_ids":[]}]
+    B=[{"instance_id":"i-1","name":"h","ports":[{"port":443,"protocol":"HTTPS"}]}]
+    json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
+    out=os.path.join(d,"r.html")
+    r=subprocess.run([PY_,"render_report.py","--data",d,"--out",out,*extra],capture_output=True,text=True)
+    return r.returncode, (open(out).read() if os.path.exists(out) else "")
+base=dict(instance_id="i-1",name="h",component="nginx",severity="Critical",status="Open")
+# Match the RENDERED pill markup, not the class name: 'ev-epss' also appears in the stylesheet,
+# so a bare substring test would pass on every report and prove nothing.
+EPSS_PILL='class="ev ev-epss"'; UNK_PILL='class="ev ev-unknown"'; BOTH_PILL='class="ev ev-both"'
+# (1) malformed EPSS feed value: must NOT render as a 0% row carrying an "EPSS" evidence pill.
+rc,h=render([{**base,"cve":"CVE-2024-1","cvss":9.1,"epss":"n/a","kev":False}])
+if rc!=0: fails.append(("malformed-epss",f"exit {rc}"))
+if ">0%<" in h: fails.append(("malformed-epss","rendered a fabricated 0% score"))
+if EPSS_PILL in h: fails.append(("malformed-epss","claimed EPSS evidence with no EPSS value"))
+if UNK_PILL not in h: fails.append(("malformed-epss","no 'no public signal' pill rendered"))
+if "no public signal" not in h: fails.append(("malformed-epss","gap not surfaced in the Evidence cell"))
+if "pill-na" not in h: fails.append(("malformed-epss","absent score not shown as an n/a pill"))
+# (2) a MALFORMED feed and a GENUINE boundary value must render DIFFERENTLY (the review check
+# the dimension-3 finding asks for -- if they are identical, the report cannot be trusted).
+rc2,h2=render([{**base,"cve":"CVE-2024-1","cvss":9.1,"epss":0.0,"kev":False}])
+if rc2!=0: fails.append(("zero-epss",f"exit {rc2}"))
+if h==h2: fails.append(("indistinguishable","malformed EPSS renders identically to a genuine 0.0"))
+# (3) an input-supplied gate_reason must not override what the row's own values support.
+rc3,h3=render([{**base,"cve":"CVE-2024-1","cvss":9.1,"epss":None,"kev":False,"gate_reason":"epss"}])
+if EPSS_PILL in h3: fails.append(("supplied-gate_reason","trusted a gate_reason the data contradicts"))
+# (4) a real KEV row still gets its KEV pill (the fix must not suppress genuine evidence).
+rc4,h4=render([{**base,"cve":"CVE-2024-2","cvss":9.1,"epss":0.94,"kev":True}])
+if BOTH_PILL not in h4: fails.append(("kev+epss","lost the EPSS+KEV evidence pill"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+
+echo "== 8e. reduced mode never claims CISA-KEV for the API's ExploitMaturity substitute =="
+python3 - <<'PY' && ok "KEV wording matches the signal the run actually read" || bad "reduced mode overstates KEV"
+import json,os,re,subprocess,sys,tempfile
+PY_=sys.executable; fails=[]
+def render(extra=()):
+    d=tempfile.mkdtemp()
+    A=[{"instance_id":"i-1","name":"h","type":"AwsEc2Instance","tenant":"1","privileged":True,"identity_ids":[]}]
+    # B empty in reduced mode is supplied by the caller via --no-endpoint; keep the endpoint for MCP.
+    B=[{"instance_id":"i-1","name":"h","ports":[{"port":443,"protocol":"HTTPS"}]}]
+    C=[{"instance_id":"i-1","name":"h","component":"nginx","cve":"CVE-2024-1","cvss":9.1,
+        "epss":0.94,"kev":True,"severity":"Critical","status":"Open"}]
+    json.dump({"A":A,"B":B,"C":C},open(os.path.join(d,"assembled.json"),"w"))
+    out=os.path.join(d,"r.html")
+    r=subprocess.run([PY_,"render_report.py","--data",d,"--out",out,*extra],capture_output=True,text=True)
+    return r.returncode, (open(out).read() if os.path.exists(out) else "")
+rc,mcp=render()
+rc2,red=render(("--no-endpoint",))
+if rc!=0 or rc2!=0: fails.append(("exit",f"mcp={rc} reduced={rc2}"))
+# The MCP edition reads the REAL CISA-KEV field, so it must still say so -- the fix must not
+# water down the authoritative edition's wording.
+if 'class="badge b-kev">CISA KEV<' not in mcp: fails.append(("mcp","lost the CISA KEV host badge"))
+if "&#9888; EPSS + KEV" not in mcp: fails.append(("mcp","lost the EPSS + KEV evidence pill"))
+if "On CISA KEV" not in mcp: fails.append(("mcp","lost the CISA KEV KPI label"))
+# The reduced edition has NO CISA-KEV field: assemble_api.py substitutes ExploitMaturity. Naming
+# CISA KEV there cites a source the run never read AND contradicts the reduced banner's own
+# sentence that the API exposes no CISA-KEV flag.
+banner="does not expose observed listening endpoints"
+if banner not in red: fails.append(("reduced","reduced banner missing -- test proves nothing"))
+# Assert only on surfaces reduced mode actually RENDERS. spec.post_filter with require_port=False
+# returns review/drop and never 'keep' (asserted below), so reduced mode emits no host cards --
+# and therefore no host badge, no evidence pill and no diagram. Asserting their absence here
+# would pass no matter what the labeller does; the review-table header and the summary/methodology
+# prose are the reduced-mode surfaces with real discriminating power.
+if "<th>exploit maturity</th>" not in red:
+    fails.append(("reduced","review-table column still headed KEV"))
+if "On CISA KEV" in red: fails.append(("reduced","KPI tile claims CISA KEV"))
+if "confirmed exploited in the wild" in red:
+    fails.append(("reduced","asserts confirmed in-the-wild exploitation the API cannot support"))
+if "exploit maturity" not in red: fails.append(("reduced","never names the substitute signal"))
+# Exactly ONE literal CISA-KEV may remain in reduced mode: the banner's own statement that the
+# field is absent. Any other occurrence is the report re-asserting what the banner denies.
+extra_kev=[m.start() for m in re.finditer("CISA.KEV", red)]
+if len(extra_kev)!=1:
+    ctx=[red[max(0,i-60):i+40].replace("\n"," ") for i in extra_kev]
+    fails.append(("reduced",f"expected 1 CISA-KEV mention (the banner), found {len(extra_kev)}: {ctx}"))
+# Pin the premise the two skipped assertions above rest on. If a future change lets reduced mode
+# emit a 'keep' (and thus cards, badges and evidence pills), those surfaces become reachable and
+# untested -- this fails and says so rather than leaving a silent hole.
+import attack_path_spec as spec
+_out={spec.post_filter({"component":c},"Running",p,require_port=False)[0]
+      for c in list(spec.SERVICE_PORTS)+list(spec.SERVICE_ALIASES)+["thunderbird","unknown-thing",""]
+      for p in (set(),{443},{22,3389})}
+if "keep" in _out:
+    fails.append(("premise","reduced mode now yields 'keep' -- host cards/badges/evidence pills "
+                            "render in reduced mode and need their own KEV-wording assertions"))
 if fails:
     for f in fails: print("    FAIL",f)
     sys.exit(1)
