@@ -561,6 +561,14 @@ def main():
         _die(f"--date must be an ISO calendar date (YYYY-MM-DD), got {args.date!r}. "
              f"Omit --date to use today.")
 
+    # Scale controls use 0 as the documented "unlimited" sentinel, so a NEGATIVE value has no
+    # meaning. Unvalidated it is not rejected but silently absurd: --max-cards -5 slices the
+    # ranked host list from the end, renders a header reading "Beyond the top -5", and exits 0.
+    for _flag,_val in (("--max-cards",args.max_cards),("--max-cves-per-host",args.max_cves_per_host),
+                       ("--max-rows",args.max_rows)):
+        if _val < 0:
+            _die(f"{_flag} must be >= 0 ({_val} given; 0 means unlimited).")
+
     # --- load + validate structure up front (clear errors, not tracebacks) ---
     data=_load_json(os.path.join(args.data,"assembled.json"), "assembled.json")
     if not isinstance(data, dict):
@@ -611,6 +619,26 @@ def main():
     # listening-component test only, and the report is bannered as reduced-fidelity.
     REDUCED = args.no_endpoint or (len(data["B"])==0 and len(data["C"])>0)
 
+    # Gate 4 can only be applied as an EXCLUSION when the endpoint dataset is known-complete.
+    # REDUCED covers the all-or-nothing cases (explicit flag, or B entirely empty), but a
+    # PARTIAL endpoint pull is the common real failure -- a lost page, an interrupted paginate,
+    # a scope that errored -- and it leaves B non-empty while still missing hosts. Dropping a
+    # host on absent-but-expected endpoint data is a silent false negative in the tool's core
+    # claim, so when the pull reported a gap we degrade to 'review' (surfaced, caveated) instead
+    # of 'drop' (invisible). ENDPOINT_GAP comes from the same _coverage_gap.txt signal the banner
+    # uses, read HERE rather than at the banner so gate 4 and the banner agree on the facts and
+    # so the decision is uniform for every row.
+    _gap_txt_early=""
+    _gapf_early=os.path.join(args.data,"_coverage_gap.txt")
+    if os.path.exists(_gapf_early):
+        try:
+            with open(_gapf_early) as _gf: _gap_txt_early=_gf.read()
+        except OSError:
+            _gap_txt_early="unreadable coverage-gap marker"
+    # Any coverage gap makes endpoint completeness unprovable. Treat the endpoint dataset as
+    # untrustworthy unless the marker explicitly concerns only non-endpoint pages.
+    ENDPOINT_GAP = bool(_gap_txt_early.strip())
+
     paths=[]; review=[]; excluded=[]
     for _raw in data["C"]:
         m=_norm_cve(_raw); iid=m["instance_id"]; host=A.get(iid)
@@ -621,6 +649,19 @@ def main():
         # surface a non-exposed host as if it were exposed). In REDUCED mode there are no endpoints by
         # definition, so this gate is not applied (the reduced banner already states that limitation).
         if not REDUCED and not vp:
+            if ENDPOINT_GAP:
+                # Endpoint data is incomplete: absence of a port is not evidence of absence of a
+                # listener. Surface it for review with the reason stated, never silently dropped.
+                review.append({**m,"port":None,"service":spec.service_key(m["component"]),
+                    "pf_status":"review",
+                    "pf_reason":("endpoint data for this host is MISSING because the pull lost one or "
+                                 "more endpoint pages -- exposure could not be confirmed OR ruled out; "
+                                 "surfaced for manual review (coverage gap, not a clean result)"),
+                    "privileged": bool(host.get("privileged")) if host else False,
+                    "type": host.get("type") if host else m.get("type"),
+                    "tenant": (host.get("tenant") if host else None) or "",
+                    "identity_ids": [i for i in (host.get("identity_ids") or []) if i] if host else []})
+                continue
             excluded.append({**m,"reason":"no observed listening endpoint on host (fails gate 4: exposure)"}); continue
         status,reason = spec.post_filter(m, "Running", vp, require_port=not REDUCED)
         if status=="drop":
@@ -707,14 +748,24 @@ def main():
 
     # Coverage-gap banner: if a chunked run wrote _coverage_gap.txt (some accounts/regions failed
     # to pull), surface it PROMINENTLY so a partial report is never mistaken for complete.
-    _gapf=os.path.join(args.data,"_coverage_gap.txt")
-    if os.path.exists(_gapf):
-        try:
-            with open(_gapf) as _gf: _gaptxt=_gf.read().strip()
-        except OSError:
-            _gaptxt="Some scopes failed to pull; this report is INCOMPLETE."
+    # (read once, before the post-filter loop, so gate 4 and this banner agree on the facts)
+    if _gap_txt_early.strip():
+        _gaptxt=_gap_txt_early.strip()
         reduced_banner=(f'<div class="note" style="border-left-color:var(--crit)"><b>&#9888; INCOMPLETE COVERAGE.</b> '
-        f'{esc(_gaptxt)} Findings below reflect only the scopes that pulled successfully.</div>' + reduced_banner)
+        f'{esc(_gaptxt)} Findings below reflect only the scopes that pulled successfully. '
+        f'Hosts whose endpoint data was lost are listed under &ldquo;Needs review&rdquo; rather than '
+        f'dropped &mdash; treat their exposure as UNKNOWN, not absent.</div>' + reduced_banner)
+
+    # No-data banner: an empty dataset renders an otherwise normal report, which reads as an
+    # authoritative "no external attack paths" -- indistinguishable from a healthy estate that
+    # was actually assessed. State the denominator instead. Exit stays 0 by design: "ran fine,
+    # nothing to report" is a success, and the suite asserts that contract.
+    if not data["A"] and not data["B"] and not data["C"]:
+        reduced_banner=('<div class="note" style="border-left-color:var(--crit)"><b>&#9888; NO DATA EXAMINED.</b> '
+        'The input dataset was empty: <b>0 workloads evaluated, 0 endpoints, 0 vulnerability rows</b>. '
+        'This is <b>not</b> a finding of &ldquo;no external attack paths&rdquo; &mdash; nothing was assessed. '
+        'Verify the pull step completed and that assembled.json was built from real result pages.</div>'
+        + reduced_banner)
 
     # Truncation banner: if --max-rows dropped rows, say so prominently (never a silent cut).
     if ROWS_TRUNCATED:
@@ -800,9 +851,16 @@ A workload appears only if <b>all</b> of the following hold, applied in this ord
 <footer>
 Tenable Cloud Security (UDM/Explore) &middot; generated {DATE}. Logic governed by attack_path_spec.py (single source of truth; self-tested, query validated against live count). Gate: running + internet-direct + wide/all + validated endpoint + open + AV:N + AC:Low + server-side-listener + (EPSS&ge;0.30 OR {_kev("rank")}). Ranked by privilege tier, then {_kev("rank")}, then EPSS. Post-filter: {len(excluded)} CVE-rows dropped (client/library/local component, stopped host, or listening-port not exposed); {len(review)} surfaced for review (exposed + exploitable but component not in the service map &mdash; never silently dropped). Diagrams depict a plausible exploitation chain, not confirmed compromise. Multi-account lab/demo environment &mdash; validate classification before remediation ticketing.
 </footer></body></html>"""
-    os.makedirs(os.path.dirname(args.out),exist_ok=True)
-    with open(args.out,"w") as _out: _out.write(HTML)
-    print("wrote report:",args.out,"(",len(HTML),"bytes )")
+    # All rendering work is already done here, so a write failure is the most expensive place to
+    # traceback. Report it as an input error (exit 2), like every other unusable-input path.
+    try:
+        _outdir=os.path.dirname(args.out)
+        if _outdir: os.makedirs(_outdir,exist_ok=True)
+        with open(args.out,"w") as _out: _out.write(HTML)
+    except OSError as e:
+        _die(f"cannot write report to {args.out!r}: {e.strerror or e}. "
+             f"Check the path is writable and the parent directory exists.")
+    print("wrote report:",args.out,"(",len(HTML.encode("utf-8")),"bytes )")
     print("hosts:",len(allhosts),"(cards:",len(hostlist),"overflow:",len(overflow),") | tier1:",n1p_total,"| tier2:",n2p_total,"| kev-hosts:",nkev,"| accounts:",len(accts))
     print("post-filter: dropped",len(excluded),"| surfaced-for-review",len(review),"(unmapped exposed components)")
     print("distinct CVEs in report:",len({c['cve'] for h in hostlist for c in h['cves']}))

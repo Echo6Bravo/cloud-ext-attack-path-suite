@@ -36,20 +36,67 @@ import attack_path_spec as spec
 SEVERE = spec.PRIVILEGE_ATTR  # "SeverePermissionActionPrincipalAttribute"
 
 
+# Page-level coverage accounting. A page that never landed is INVISIBLE downstream: the
+# assembled dataset simply has fewer rows, and a renderer cannot distinguish "this host has
+# no listening endpoint" from "this host's endpoint page was lost". That is a silent false
+# negative in a tool whose entire claim is reachability, so every way a page can go missing
+# is recorded here and surfaced via _coverage_gap.txt (which render_report.py already banners).
+_PAGE_RE = re.compile(r"_p(\d+)\.json$")
+COVERAGE_GAPS = []
+
+
+def _page_index(path):
+    """Return the N from a raw_X_<tag>_p<N>.json filename, or None if unnumbered."""
+    m = _PAGE_RE.search(path)
+    return int(m.group(1)) if m else None
+
+
+def _check_page_sequence(files, prefix):
+    """Detect gaps in the p<N> sequence per scope tag. The pull contract writes N = 0,1,2,...
+    contiguously per (prefix, tag), so a hole means a page was never written."""
+    by_tag = {}
+    for f in files:
+        n = _page_index(f)
+        if n is None:
+            continue
+        base = os.path.basename(f)
+        tag = base[len(prefix):base.rfind("_p")] if "_p" in base else base
+        by_tag.setdefault(tag, set()).add(n)
+    for tag, seen in sorted(by_tag.items()):
+        missing = sorted(set(range(max(seen) + 1)) - seen)
+        if missing:
+            COVERAGE_GAPS.append(
+                f"{prefix}{tag}: page(s) {missing} missing from the p0..p{max(seen)} sequence")
+
+
 def _load_pages(raw_dir, prefix):
     """Yield parsed page dicts for raw_<prefix>_*.json, skipping unreadable/malformed pages
     with a warning rather than aborting the whole assembly (a single corrupt page in a large
-    multi-account pull must not lose everything). Returns nothing if the dir/pattern is empty."""
-    for f in sorted(glob.glob(os.path.join(raw_dir, prefix + "*.json"))):
+    multi-account pull must not lose everything). Returns nothing if the dir/pattern is empty.
+
+    Every skip and every truncation signal is also recorded in COVERAGE_GAPS so the loss is
+    reported, not merely warned about on a stderr nobody reads."""
+    files = sorted(glob.glob(os.path.join(raw_dir, prefix + "*.json")))
+    _check_page_sequence(files, prefix)
+    last = files[-1] if files else None
+    for f in files:
         try:
             with open(f) as fh:
                 page = json.load(fh)
         except (json.JSONDecodeError, OSError) as e:
             sys.stderr.write(f"assemble: WARNING: skipping unreadable/malformed page {f}: {e}\n")
+            COVERAGE_GAPS.append(f"{os.path.basename(f)}: unreadable/malformed page skipped ({e})")
             continue
         if not isinstance(page, dict):
             sys.stderr.write(f"assemble: WARNING: skipping page {f}: top-level is not a JSON object\n")
+            COVERAGE_GAPS.append(f"{os.path.basename(f)}: skipped (top-level is not a JSON object)")
             continue
+        # hasMore on the LAST page means pagination stopped early (interrupted session, tool
+        # error, model stopped iterating) -- rows beyond it were never fetched.
+        if f == last and page.get("hasMore"):
+            COVERAGE_GAPS.append(
+                f"{os.path.basename(f)}: hasMore=true on the final page -- pagination stopped "
+                f"early, later rows were never fetched")
         yield page
 
 
@@ -225,6 +272,25 @@ def main():
     with open(args.out, "w") as fh:
         json.dump(out, fh)
     print(f"assembled: A={len(out['A'])} hosts | B={len(out['B'])} endpoint-hosts | C={len(out['C'])} cve-rows")
+
+    # Record page-level loss where the renderer will see it. APPEND, because a chunked run's
+    # run_attack_path.sh may already have written whole-scope failures to this file; clobbering
+    # it would trade one silent gap for another.
+    if COVERAGE_GAPS:
+        gapf = os.path.join(os.path.dirname(args.out) or ".", "_coverage_gap.txt")
+        ep_gaps = [g for g in COVERAGE_GAPS if g.startswith("raw_B_")]
+        msg = (f"{len(COVERAGE_GAPS)} raw result page(s) were lost or incomplete during the pull, "
+               f"so this dataset is a SUBSET of the environment: " + "; ".join(COVERAGE_GAPS))
+        if ep_gaps:
+            msg += (" -- ENDPOINT pages are among the losses, so hosts may appear to have no "
+                    "listening service when their endpoint data simply never arrived; "
+                    "such hosts are surfaced for review rather than dropped.")
+        try:
+            with open(gapf, "a") as fh:
+                fh.write(msg + "\n")
+        except OSError as e:
+            sys.stderr.write(f"assemble: WARNING: could not write {gapf}: {e}\n")
+        sys.stderr.write(f"assemble: WARNING: {msg}\n")
     if args.endpoint_ips and ips:
         with open(args.endpoint_ips, "w") as fh:
             json.dump({"endpoints": ips}, fh)
