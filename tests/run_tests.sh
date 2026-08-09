@@ -573,7 +573,12 @@ PY
 
 echo "== 12d. renderer degrades cleanly: unwritable --out, bad numeric flags, empty dataset =="
 # unwritable --out must be rc=2 with a clear message, NOT a traceback after all render work.
-UNW=$(python3 render_report.py --data ./data/sample --out /nonexistent-dir-xyz/sub/r.html 2>&1; echo "rc=$?")
+# Make the FAILURE PORTABLE: an unwritable directory or a nonexistent root path is not unwritable
+# to root, which is exactly how CI's container job runs -- the first version of this test passed
+# locally and silently proved nothing in the container. Using a regular FILE as a parent path
+# component yields ENOTDIR for every user, root included.
+UNWF=$(mktemp); : > "$UNWF"
+UNW=$(python3 render_report.py --data ./data/sample --out "$UNWF/sub/r.html" 2>&1; echo "rc=$?")
 if echo "$UNW" | grep -q "rc=2" && ! echo "$UNW" | grep -q "Traceback"; then
   ok "unwritable --out -> rc=2, no traceback"
 else bad "unwritable --out: $(echo "$UNW" | tail -2 | tr '\n' ' ')"; fi
