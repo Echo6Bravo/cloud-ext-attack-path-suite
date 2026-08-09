@@ -316,6 +316,12 @@ if h==h2: fails.append(("indistinguishable","malformed EPSS renders identically 
 # (3) an input-supplied gate_reason must not override what the row's own values support.
 rc3,h3=render([{**base,"cve":"CVE-2024-1","cvss":9.1,"epss":None,"kev":False,"gate_reason":"epss"}])
 if EPSS_PILL in h3: fails.append(("supplied-gate_reason","trusted a gate_reason the data contradicts"))
+# An ABSENT epss (None) must not become a fabricated 0% either -- same claim case (1) makes for a
+# malformed value. Without this, _num()'s `v is None -> None` contract is unguarded: mutating it to
+# return 0.0 leaves the whole suite green while every scoreless CVE renders an authoritative "0%"
+# that argues AGAINST remediation. (Verified with mutation-check.sh: this line is what fails.)
+if ">0%<" in h3: fails.append(("absent-epss","absent EPSS rendered as a fabricated 0% score"))
+if UNK_PILL not in h3: fails.append(("absent-epss","no 'no public signal' pill for an absent EPSS"))
 # (4) a real KEV row still gets its KEV pill (the fix must not suppress genuine evidence).
 rc4,h4=render([{**base,"cve":"CVE-2024-2","cvss":9.1,"epss":0.94,"kev":True}])
 if BOTH_PILL not in h4: fails.append(("kev+epss","lost the EPSS+KEV evidence pill"))
@@ -480,6 +486,157 @@ if fails:
     for f in fails: print("    FAIL",f)
     sys.exit(1)
 PY
+
+echo "== 12b. PARTIAL endpoint pull is surfaced, never silently dropped (false-negative guard) =="
+# The defect this guards: REDUCED mode only triggered when B was ENTIRELY empty, so a partial
+# endpoint pull (lost page / interrupted paginate) left gate 4 excluding hosts whose endpoint data
+# merely never arrived -- 3 of 4 internet-exposed hosts vanished with exit 0 and no banner.
+python3 - <<'PY' || bad "partial endpoint pull"
+import json,os,subprocess,sys,tempfile,shutil
+PY_=sys.executable or "python3"
+def render(d,extra=()):
+    out=os.path.join(d,"r.html")
+    r=subprocess.run([PY_,"render_report.py","--data",d,"--out",out],capture_output=True,text=True)
+    return r.returncode,(open(out).read() if os.path.exists(out) else ""),r.stderr
+src="./data/sample"; fails=[]
+full=tempfile.mkdtemp(); trunc=tempfile.mkdtemp()
+for dst in (full,trunc):
+    for f in ("assembled.json","endpoint_ips.json"):
+        if os.path.exists(os.path.join(src,f)): shutil.copy(os.path.join(src,f),dst)
+d=json.load(open(os.path.join(trunc,"assembled.json")))
+if len(d["B"])<2: fails.append(("fixture","sample B has <2 endpoint rows; cannot test truncation"))
+names_full={r.get("name") for r in d["B"] if r.get("name")}
+d["B"]=d["B"][:1]                                    # simulate: only 1 of N endpoint pages landed
+json.dump(d,open(os.path.join(trunc,"assembled.json"),"w"))
+# assemble.py records the loss; simulate that marker (section 12c proves assemble.py writes it).
+open(os.path.join(trunc,"_coverage_gap.txt"),"w").write(
+    "raw_B_acct_p1.json: unreadable/malformed page skipped (simulated)\n")
+rc_f,h_f,_=render(full); rc_t,h_t,err_t=render(trunc)
+if rc_f!=0: fails.append(("full",f"exit {rc_f}"))
+if rc_t!=0: fails.append(("trunc",f"exit {rc_t}"))
+# THE claim: no host present in the complete report may vanish from the partial one.
+for n in sorted(names_full):
+    if n in h_f and n not in h_t:
+        fails.append(("vanished",f"host {n!r} present in full report, ABSENT from partial one"))
+if "INCOMPLETE COVERAGE" not in h_t:
+    fails.append(("no banner","partial pull rendered without an INCOMPLETE COVERAGE banner"))
+if "Needs review" not in h_t and "needs review" not in h_t.lower():
+    fails.append(("no review bucket","hosts with lost endpoint data were not surfaced for review"))
+# A COMPLETE pull must NOT be bannered (the guard must not fire on healthy data).
+if "INCOMPLETE COVERAGE" in h_f:
+    fails.append(("false alarm","complete dataset was bannered as incomplete"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+[ $? -eq 0 ] && ok "partial endpoint pull: no host silently dropped, banner + review bucket present"
+
+echo "== 12c. assemble.py records lost/incomplete raw pages as a coverage gap =="
+python3 - <<'PY' || bad "assemble page accounting"
+import json,os,subprocess,sys,tempfile
+PY_=sys.executable or "python3"
+fails=[]
+def run_assemble(raw,out):
+    r=subprocess.run([PY_,"assemble.py","--raw",raw,"--out",out],capture_output=True,text=True)
+    gap=os.path.join(os.path.dirname(out),"_coverage_gap.txt")
+    return r.returncode,(open(gap).read() if os.path.exists(gap) else ""),r.stderr
+PAGE='{"resultsList":[]}'
+# (1) a page-index GAP (p0, p2 -- p1 never written) must be recorded
+d=tempfile.mkdtemp(); raw=os.path.join(d,"raw"); os.makedirs(raw)
+open(os.path.join(raw,"raw_B_acct_p0.json"),"w").write(PAGE)
+open(os.path.join(raw,"raw_B_acct_p2.json"),"w").write(PAGE)
+rc,gap,_=run_assemble(raw,os.path.join(d,"assembled.json"))
+if rc!=0: fails.append(("gap-seq",f"exit {rc}"))
+if "missing" not in gap: fails.append(("gap-seq","a missing page index was not recorded"))
+# (2) hasMore=true on the final page = pagination stopped early
+d2=tempfile.mkdtemp(); raw2=os.path.join(d2,"raw"); os.makedirs(raw2)
+open(os.path.join(raw2,"raw_B_acct_p0.json"),"w").write('{"resultsList":[],"hasMore":true}')
+rc2,gap2,_=run_assemble(raw2,os.path.join(d2,"assembled.json"))
+if "hasMore" not in gap2: fails.append(("hasmore","truncated pagination was not recorded"))
+# (3) a malformed page is counted, not just warned to stderr
+d3=tempfile.mkdtemp(); raw3=os.path.join(d3,"raw"); os.makedirs(raw3)
+open(os.path.join(raw3,"raw_B_acct_p0.json"),"w").write('{"resultsList":[]}')
+open(os.path.join(raw3,"raw_B_acct_p1.json"),"w").write('{"resultsList":[{')
+rc3,gap3,_=run_assemble(raw3,os.path.join(d3,"assembled.json"))
+if "malformed" not in gap3: fails.append(("malformed","a skipped malformed page was not recorded"))
+# (4) a CLEAN, contiguous pull writes NO gap file (the guard must not fire on healthy data)
+d4=tempfile.mkdtemp(); raw4=os.path.join(d4,"raw"); os.makedirs(raw4)
+open(os.path.join(raw4,"raw_B_acct_p0.json"),"w").write(PAGE)
+open(os.path.join(raw4,"raw_B_acct_p1.json"),"w").write(PAGE)
+rc4,gap4,_=run_assemble(raw4,os.path.join(d4,"assembled.json"))
+if gap4.strip(): fails.append(("false alarm",f"clean pull wrote a coverage gap: {gap4!r}"))
+if fails:
+    for f in fails: print("    FAIL",f)
+    sys.exit(1)
+PY
+[ $? -eq 0 ] && ok "assemble records page gaps / hasMore / malformed; silent on a clean pull"
+
+echo "== 12d. renderer degrades cleanly: unwritable --out, bad numeric flags, empty dataset =="
+# unwritable --out must be rc=2 with a clear message, NOT a traceback after all render work.
+UNW=$(python3 render_report.py --data ./data/sample --out /nonexistent-dir-xyz/sub/r.html 2>&1; echo "rc=$?")
+if echo "$UNW" | grep -q "rc=2" && ! echo "$UNW" | grep -q "Traceback"; then
+  ok "unwritable --out -> rc=2, no traceback"
+else bad "unwritable --out: $(echo "$UNW" | tail -2 | tr '\n' ' ')"; fi
+# negative scale controls are meaningless (0 = unlimited) and must be rejected, not rendered.
+rm -f /tmp/_neg.html   # a stale file from a previous run would make the absence check vacuous
+NEG=$(python3 render_report.py --data ./data/sample --max-cards -5 --out /tmp/_neg.html 2>&1; echo "rc=$?")
+if echo "$NEG" | grep -q "rc=2" && ! grep -q "Beyond the top -5" /tmp/_neg.html 2>/dev/null; then
+  ok "--max-cards -5 rejected (no 'Beyond the top -5' output)"
+else bad "negative --max-cards accepted: $(echo "$NEG" | tail -1)"; fi
+# an all-empty dataset must state the denominator, not read as a clean bill of health (exit 0
+# is the designed contract for 'ran fine, nothing to report' -- assert it stays 0).
+EMPD=$(mktemp -d); printf '{"A":[],"B":[],"C":[]}' > "$EMPD/assembled.json"
+python3 render_report.py --data "$EMPD" --out "$EMPD/r.html" >/dev/null 2>&1; ERC=$?
+if [ $ERC -eq 0 ] && grep -q "NO DATA EXAMINED" "$EMPD/r.html" \
+   && grep -q "0 workloads evaluated" "$EMPD/r.html"; then
+  ok "empty dataset: exit 0 + explicit 'NO DATA EXAMINED / 0 workloads evaluated'"
+else bad "empty-dataset banner (exit $ERC)"; fi
+# byte count in the success line must be BYTES, not characters (multibyte-safe).
+BYTES=$(python3 render_report.py --data ./data/sample --out /tmp/_b.html 2>/dev/null | sed -n 's/.*( \([0-9]*\) bytes ).*/\1/p')
+ACTUAL=$(wc -c < /tmp/_b.html | tr -d ' ')
+[ "$BYTES" = "$ACTUAL" ] && ok "reported size == actual bytes on disk ($BYTES)" \
+  || bad "reported '$BYTES' bytes but file is $ACTUAL bytes"
+
+echo "== 12e. planner TSV: tab/newline in an account id is rejected, not emitted =="
+# The runner reads the plan with `while IFS=$'\t' read -r tag acct region`, so an embedded tab
+# shifts columns and a newline forges an entire extra row (including a counterfeit MODE line).
+# NOTE the budget: it must be small enough to force PER-ACCOUNT chunks, because in tenant mode
+# the account id is never emitted and the guard would appear to pass without ever being reached.
+printf '{"accounts":{"111\\t222":9000,"other":10}}' > /tmp/_tsv_tab.json
+printf '{"accounts":{"333\\nMODE\\tFAKE\\tFAKE":9000,"other":10}}' > /tmp/_tsv_nl.json
+TAB=$(python3 attack_path_spec.py plan /tmp/_tsv_tab.json 4000 --tsv 2>&1; echo "rc=$?")
+NL=$(python3 attack_path_spec.py plan /tmp/_tsv_nl.json 4000 --tsv 2>&1; echo "rc=$?")
+if echo "$TAB" | grep -q "rc=2" && echo "$NL" | grep -q "rc=2" \
+   && ! echo "$NL" | grep -q "^MODE.FAKE"; then
+  ok "TSV emitter rejects TAB/NEWLINE in ids (no forged rows)"
+else bad "TSV injection: tab='$(echo "$TAB"|tail -1)' nl='$(echo "$NL"|tail -1)'"; fi
+# a normal id still plans and emits exactly 1 MODE line + 1 row per chunk
+printf '{"accounts":{"111111111111":10}}' > /tmp/_tsv_ok.json
+OKN=$(python3 attack_path_spec.py plan /tmp/_tsv_ok.json 20000 --tsv 2>/dev/null | wc -l | tr -d ' ')
+OKM=$(python3 attack_path_spec.py plan /tmp/_tsv_ok.json 20000 --tsv 2>/dev/null | grep -c "^MODE")
+[ "$OKN" = "2" ] && [ "$OKM" = "1" ] && ok "valid ids still emit a well-formed TSV plan" \
+  || bad "valid-id TSV shape (lines=$OKN mode=$OKM)"
+
+echo "== 12f. assert_guid enforces under python -O (asserts are stripped there) =="
+# A bare `assert` validating external input is unenforced in an optimized build -- exactly where
+# a malformed GUID reaching UDM does damage. Must raise a real exception in BOTH modes.
+for OPT in "" "-O"; do
+  R=$(python3 $OPT -c "
+import attack_path_spec as s
+try:
+    s.assert_guid('NOT-A-GUID')
+    print('ACCEPTED')
+except (ValueError, AssertionError):
+    print('REJECTED')
+" 2>&1)
+  [ "$R" = "REJECTED" ] && ok "assert_guid rejects a non-hex GUID (python3 ${OPT:-default})" \
+    || bad "assert_guid under 'python3 ${OPT:-default}': $R"
+done
+# a VALID guid must still pass through untouched in both modes
+python3 -O -c "
+import attack_path_spec as s
+g=s.hexguid(); assert s.assert_guid(g)==g" 2>/dev/null \
+  && ok "assert_guid passes a valid GUID through under -O" || bad "assert_guid rejects valid GUID"
 
 echo "== 13. orchestrator end-to-end (run_attack_path.sh, mocked claude CLI) =="
 # size -> plan -> fan-out -> merge -> render, both tenant + per-account modes + guards.

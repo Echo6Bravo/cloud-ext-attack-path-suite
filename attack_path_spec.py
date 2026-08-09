@@ -128,7 +128,12 @@ def hexguid():
 
 _HEX_GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 def assert_guid(g):
-    assert _HEX_GUID.match(g), f"INVALID GUID (non-hex will break UDM at runtime): {g}"
+    # A real exception, NOT an assert: `python -O` strips asserts, so under an optimized
+    # interpreter an assert-guarded check silently passes anything through -- exactly the build
+    # where a malformed GUID reaching UDM does damage. This validates a value that ends up in a
+    # query sent to the API, so it must be enforced unconditionally.
+    if not _HEX_GUID.match(g):
+        raise ValueError(f"INVALID GUID (non-hex will break UDM at runtime): {g}")
     return g
 
 def validate_spec():
@@ -889,11 +894,28 @@ def _cli_plan(argv):
         # machine-readable for shells: first line "MODE\t<mode>\t<oversized_count>",
         # then one "<tag>\t<account>\t<region>" line per chunk (account/region empty for tenant).
         import sys as _s
-        _s.stdout.write(f"MODE\t{plan['mode']}\t{len(plan['oversized'])}\n")
+        # The consumer reads this with `while IFS=$'\t' read -r tag acct region`, so a TAB or
+        # NEWLINE inside an account/region id breaks the record contract: a tab shifts every
+        # later column, and a newline forges an ENTIRE EXTRA ROW -- including a counterfeit
+        # "MODE" line. The ids come from a sizes file the operator supplies, so they are input,
+        # not constants. Reject rather than escape: a mangled cloud account id has no valid
+        # interpretation, and silently rewriting one would mis-scope the pull.
+        def _tsv_field(v, what):
+            s=str(v)
+            bad=[n for ch,n in (("\t","TAB"),("\n","NEWLINE"),("\r","CARRIAGE RETURN")) if ch in s]
+            if bad:
+                _die(f'{what} contains {", ".join(bad)}, which breaks the TSV record contract '
+                     f'consumed by the runner: {s!r}')
+            return s
+        # Validate EVERY field before writing ANY line: stdout is consumed as a stream, so
+        # emitting the MODE header and then aborting hands the runner a truncated plan it may
+        # already have acted on. Build the whole payload first, then write it in one pass.
+        lines=[f"MODE\t{plan['mode']}\t{len(plan['oversized'])}"]
         for c in plan["chunks"]:
-            a=c.get("account",""); r=c.get("region","")
+            a=_tsv_field(c.get("account",""),"account id"); r=_tsv_field(c.get("region",""),"region")
             tag = "tenant" if c.get("scope")=="tenant" else (f"{a}_{r}" if r else a)
-            _s.stdout.write(f"{tag}\t{a}\t{r}\n")
+            lines.append(f"{tag}\t{a}\t{r}")
+        _s.stdout.write("".join(ln+"\n" for ln in lines))
         return plan
     print(json.dumps(plan,indent=2))
     return plan
