@@ -645,7 +645,21 @@ def post_filter(match, host_status:str, validated_ports:set, require_port:bool=T
     # kind == "service"
     if not require_port:
         return ("review", f"listening service '{sk}' but no observed-port data (reduced mode) -- reachability unconfirmed")
-    need=SERVICE_PORTS.get(sk,set())
+    # A service resolved by SERVICE_ALIASES but ABSENT from SERVICE_PORTS is a coverage gap in our
+    # own tables, not a finding about the customer's host -- so it goes to 'review' like any other
+    # thing we cannot map, per this function's own contract above ("never silently dropped").
+    #
+    # This branch is why `.get(sk, set())` is wrong here: an empty default makes the intersection
+    # below unconditionally empty, so an unmapped service renders as "not reachable" -- a FALSE
+    # NEGATIVE indistinguishable in the report from a service that genuinely does not listen on any
+    # exposed port. The invariant (every SERVICE_ALIASES value is a SERVICE_PORTS key) holds today,
+    # but nothing enforced it, so the next alias added without a ports entry would have silently
+    # lost its findings. tests/run_tests.sh section 6 now asserts the invariant directly, and this
+    # branch keeps the failure visible rather than silent if it is ever broken anyway.
+    need = SERVICE_PORTS.get(sk)
+    if not need:
+        return ("review", f"listening service '{sk}' has no port mapping in SERVICE_PORTS "
+                          f"-- reachability unconfirmed, SURFACED for manual review (table coverage gap)")
     if not (validated_ports & need):
         return ("drop", f"service {sk} listens on {sorted(need)} but host exposes {sorted(validated_ports)} -- not reachable")
     return ("keep", f"reachable: {sk} on {sorted(validated_ports & need)}")
